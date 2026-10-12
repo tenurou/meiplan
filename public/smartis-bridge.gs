@@ -48,7 +48,10 @@ function doPost(event) {
           }
         } else if (item.updateCells) {
           const update = item.updateCells, row = update.range.startRowIndex + 1, col = update.range.startColumnIndex + 1;
-          const values = (update.rows || []).map(line => (line.values || []).map(cell => cell.userEnteredValue?.stringValue ?? ''));
+          const values = (update.rows || []).map(line => (line.values || []).map(cell => {
+            const value = String(cell.userEnteredValue?.stringValue ?? '');
+            return value.startsWith('=') ? `'${value}` : value;
+          }));
           if (values.length) sheet.getRange(row, col, values.length, values[0].length).setValues(values);
         } else {
           return json({ ok: false, error: 'Apps Script получил неподдерживаемую операцию.' });

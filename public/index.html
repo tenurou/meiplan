@@ -102,7 +102,7 @@
       <section class="card smartis-card">
         <div class="step-head"><span class="step-number">01</span><div><h2>Подключение Google Sheets</h2><p>Работа через Apps Script — личный Google-вход и Google Cloud не нужны</p></div></div>
         <div class="smartis-controls"><button id="smartis-google-connect" class="button primary" type="button" hidden>Подключить Google</button><button id="smartis-google-disconnect" class="button ghost" type="button" hidden>Отключить</button><small id="smartis-google-message" role="status">Проверяю подключение таблиц…</small></div>
-        <p id="smartis-google-setup" class="filter-note" hidden>Администратор: создай Apps Script из <a href="/public/smartis-bridge.gs" download>шаблона</a>, вставь его ключ и опубликуй как веб-приложение от своего имени. Затем внеси URL и этот же ключ ниже. Таблицу открывать всем по ссылке не нужно.</p>
+        <p id="smartis-google-setup" class="filter-note" hidden>Администратор: войди в панель ниже, нажми «Сгенерировать ключ», создай Apps Script из <a href="/public/smartis-bridge.gs" download>шаблона</a> и вставь ключ вместо SHARED_SECRET. Опубликуй как веб-приложение от своего имени, затем внеси URL и тот же ключ ниже. Таблицу открывать всем по ссылке не нужно.</p>
         <form id="smartis-apps-script-admin" class="feedback-form" hidden>
           <label>URL опубликованного Apps Script<input name="url" type="url" placeholder="https://script.google.com/macros/s/…/exec" required></label>
           <label>Общий ключ для Apps Script<input name="secret" type="password" autocomplete="new-password" minlength="32" maxlength="512" placeholder="Не менее 32 случайных символов" required></label>
