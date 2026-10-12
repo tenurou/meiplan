@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "sources": {
+    "vk": {
+      "title": "VK Ads",
+      "status": "mvp",
+      "platformAliases": ["vk.com реклама", "вконтакте", "vk ads", "vk.com ads", "vk", "вк"],
+      "channelValue": "Реклама в соц.сетях: 1",
+      "contactPolicy": "first-phone-keep-unrecognized",
+      "contactOptional": true,
+      "postViewHeaders": [],
+      "columns": {
+        "personId": ["Smartis Person ID", "Person ID"],
+        "leadType": ["Тип", "Тип лида"],
+        "createdAt": ["Дата создания", "Created at"],
+        "contact": ["Контакты клиента", "Контакт", "Телефон"],
+        "platform": ["Площадка", "Источник", "Source"],
+        "campaign": ["Кампания в Smartis", "Кампания", "Campaign"],
+        "property": ["Объект интереса", "Объект", "Property"],
+        "propertyType": ["Наименование Вида помещения", "Вид помещения", "Тип помещения"],
+        "rejectionReason": ["Причина отказа: Потребность отсутствует", "Причина отказа", "Причина"],
+        "postView": []
+      }
+    },
+    "yandex-rtb": { "title": "Яндекс RTB", "status": "planned", "platformAliases": ["яндекс rtb", "rtb_yandex", "yandex rtb"] },
+    "yandex-maps": { "title": "Яндекс Карты", "status": "planned", "platformAliases": ["яндекс карты", "yandex maps", "yandex_maps"] },
+    "urban-ads": { "title": "Urban Ads", "status": "planned", "platformAliases": ["urban ads", "urban_ads"] }
+  },
+  "target": {
+    "spreadsheetId": "1gEG-wZ0cbwW89RCnX0PGM8KJpO5GyVuRGW7ZRvHaayQ",
+    "sheetTitle": "Лиды Смартис",
+    "sheetId": 1058433141,
+    "columns": ["person_id", "lead_type", "created_at", "contact", "channel", "platform", "campaign", "property_type", "property", "rejection_reason", "post_view"]
+  }
+}

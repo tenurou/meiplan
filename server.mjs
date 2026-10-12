@@ -13,6 +13,8 @@ import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, ver
 import { calculationModel, corePlacementGroup, eligiblePlanMetrics, isManualEntryHeader, planMetric, planPlacementGroup } from './public/plan-rules.js';
 import { parseNumericValue } from './public/numeric.js';
 import { rankFactTables } from './public/report-selector.js';
+import { SMARTIS_CONFIG, prepareSmartisRows, reconcileSmartis, rowsForTarget, summarizeLead } from './smartis/leads.mjs';
+import { createGoogleSheetsService } from './smartis/google-sheets.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
@@ -32,6 +34,7 @@ const host = process.env.AGM_HOST || '127.0.0.1';
 const port = Number(process.env.AGM_PORT || 8765);
 const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host.toLowerCase());
 const publicOrigin = (process.env.AGM_PUBLIC_ORIGIN || '').replace(/\/$/, '');
+const googleSheets = createGoogleSheetsService({ clientId: process.env.AGM_GOOGLE_CLIENT_ID || '', clientSecret: process.env.AGM_GOOGLE_CLIENT_SECRET || '', publicOrigin });
 const allowedHosts = new Set((process.env.AGM_ALLOWED_HOSTS || `127.0.0.1,localhost,${host}`).split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
 if (!isLoopback && (!users.length || !/^https:\/\//i.test(publicOrigin))) throw new Error('Для сетевого запуска задай AGM_USERS_FILE с пользователями и AGM_PUBLIC_ORIGIN=https://...; без них сервер остаётся loopback-only.');
 if (!isLoopback && !process.env.AGM_ALLOWED_HOSTS) throw new Error('Для сетевого запуска явно задай AGM_ALLOWED_HOSTS для reverse proxy.');
@@ -46,6 +49,7 @@ const sessions = new Map();
 const authCache = new Map();
 const adminLoginFailures = new Map();
 const activeLaunches = new Set();
+const smartisSheetLocks = new Map();
 const maxBrowsersValue = Number(process.env.AGM_MAX_BROWSERS || 18);
 const maxBrowsers = Number.isFinite(maxBrowsersValue) ? Math.max(1, Math.min(18, Math.floor(maxBrowsersValue))) : 18;
 const idleMinutesValue = Number(process.env.AGM_IDLE_BROWSER_MINUTES || 60);
@@ -58,7 +62,7 @@ function sessionFor(user) {
     fs.mkdirSync(userDir, { recursive: true, mode: 0o700 });
     const profileDir = path.join(userDir, 'browser-profile');
     const workbookPath = path.join(userDir, 'uploaded-plan.xlsx');
-    sessions.set(id, { id, username: user.username, adminUser: null, adminExpiresAt: 0, userDir, profileDir, workbookPath, secret: crypto.randomBytes(24).toString('hex'), context: null, workbook: null, workbookFileName: null, activeReport: null, proposals: new Map(), lastActivity: Date.now(), loading: null });
+    sessions.set(id, { id, username: user.username, adminUser: null, adminExpiresAt: 0, userDir, profileDir, workbookPath, secret: crypto.randomBytes(24).toString('hex'), context: null, workbook: null, workbookFileName: null, activeReport: null, proposals: new Map(), smartisWorkbook: null, smartisPreviews: new Map(), googleAuth: null, googleError: null, lastActivity: Date.now(), loading: null });
   }
   return sessions.get(id);
 }
@@ -132,6 +136,40 @@ function runPython(filePath) {
       try { resolve(JSON.parse(out)); } catch { reject(new Error('Не удалось прочитать структуру Excel')); }
     });
   });
+}
+function smartisDigest(rows) { return crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex'); }
+async function withSmartisSheetLock(key, action) {
+  const previous = smartisSheetLocks.get(key) || Promise.resolve();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const queued = previous.catch(() => {}).then(() => gate);
+  smartisSheetLocks.set(key, queued);
+  await previous.catch(() => {});
+  try { return await action(); }
+  finally { release(); if (smartisSheetLocks.get(key) === queued) smartisSheetLocks.delete(key); }
+}
+function appendSmartisHistory(state, entry) {
+  const historyPath = path.join(state.userDir, 'smartis-history.jsonl');
+  const safe = { at: new Date().toISOString(), version: 1, ...entry };
+  fs.appendFileSync(historyPath, `${JSON.stringify(safe)}\n`, { encoding: 'utf8', mode: 0o600 });
+  try { fs.chmodSync(historyPath, 0o600); } catch { /* The deployment account controls the runtime directory. */ }
+}
+async function smartisTarget(state, spreadsheetId, sheetId) {
+  const normalizedId = googleSheets.spreadsheetId(spreadsheetId);
+  const metadata = await googleSheets.metadata(state, normalizedId);
+  const selected = metadata.sheets.find(sheet => Number(sheet.sheetId) === Number(sheetId));
+  if (!selected) throw new Error('В выбранной Google-таблице нет указанного листа. Перечитай настройки.');
+  if (normalizedId === SMARTIS_CONFIG.target.spreadsheetId && (Number(selected.sheetId) !== SMARTIS_CONFIG.target.sheetId || selected.title !== SMARTIS_CONFIG.target.sheetTitle)) throw new Error('Стандартная таблица не совпадает с ожидаемым файлом или листом «Лиды Смартис».');
+  return { spreadsheetId: normalizedId, spreadsheetTitle: metadata.title, sheetId: Number(selected.sheetId), sheetTitle: selected.title, gridRows: selected.rowCount };
+}
+async function readSmartisTarget(state, target) {
+  const rows = await googleSheets.values(state, target.spreadsheetId, target.sheetTitle);
+  const lastDataIndex = rows.findLastIndex(row => row.some(value => String(value ?? '').trim() !== ''));
+  return { rows: lastDataIndex >= 0 ? rows.slice(0, lastDataIndex + 1) : [], lastDataIndex };
+}
+function safeGoogleCallbackPage(message) {
+  const text = String(message).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+  return `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение Google</title><body style="font:16px Segoe UI,Arial,sans-serif;background:#111116;color:#f1f2f6;padding:32px"><h1>${text}</h1><p>Вернись на вкладку Авто-МП. Токены Google остаются только в изолированной сессии.</p></body></html>`;
 }
 function safePlanUrl(value) {
   const url = new URL(value);
@@ -338,13 +376,24 @@ const server = http.createServer(async (req, res) => {
   try { hostname = new URL(`http://${requestHost}`).hostname.toLowerCase(); } catch { /* malformed Host */ }
   if (!hostname || !allowedHosts.has(hostname)) return send(res, 403, { error: 'Этот адрес не разрешён сервером.' });
   const origin = req.headers.origin;
-  if (origin && !isAllowedOrigin(origin)) return send(res, 403, { error: 'Origin запроса не разрешён.' });
+  const googleCallback = req.method === 'GET' && new URL(req.url || '/', 'http://127.0.0.1').pathname === '/api/smartis/google/callback';
+  if (origin && !isAllowedOrigin(origin) && !googleCallback) return send(res, 403, { error: 'Origin запроса не разрешён.' });
   const state = await authenticateRequest(req, res);
   if (!state) return;
   return requestStorage.run(state, async () => {
   if (req.method === 'GET' && req.url === '/') {
     const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8').replaceAll('__APP_TOKEN__', state.secret);
     return send(res, 200, html, mime['.html']);
+  }
+  if (googleCallback) {
+    try {
+      const linkedSession = await googleSheets.callback(new URL(req.url, 'http://127.0.0.1').searchParams);
+      linkedSession.googleError = null;
+      return send(res, 200, safeGoogleCallbackPage('Google подключён.'), 'text/html; charset=utf-8');
+    } catch (error) {
+      googleSheets.setCallbackError(new URL(req.url, 'http://127.0.0.1').searchParams, error?.message || String(error));
+      return send(res, 400, safeGoogleCallbackPage(error?.message || 'Подключение Google не завершено.'), 'text/html; charset=utf-8');
+    }
   }
   if (req.url?.startsWith('/public/')) {
     const file = path.resolve(publicDir, '.' + req.url.slice('/public'.length).split('?')[0]);
@@ -356,7 +405,87 @@ const server = http.createServer(async (req, res) => {
   recordBrowserActivity(state, req.url);
 
   try {
-    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false } });
+    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
+    if (req.method === 'POST' && req.url === '/api/smartis/google/start') {
+      current().googleError = null;
+      return send(res, 200, { url: googleSheets.begin(current()) });
+    }
+    if (req.method === 'POST' && req.url === '/api/smartis/google/disconnect') {
+      googleSheets.disconnect(current());
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === 'POST' && req.url === '/api/smartis/sheet') {
+      const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
+      if (!googleSheets.hasSession(current())) throw new Error('Сначала подключи Google-аккаунт.');
+      const spreadsheetId = googleSheets.spreadsheetId(body.spreadsheet || SMARTIS_CONFIG.target.spreadsheetId);
+      const metadata = await googleSheets.metadata(current(), spreadsheetId);
+      return send(res, 200, { spreadsheetId: metadata.spreadsheetId, title: metadata.title, sheets: metadata.sheets.map(({ sheetId, title, rowCount, columnCount }) => ({ sheetId, title, rowCount, columnCount })) });
+    }
+    if (req.method === 'POST' && req.url === '/api/smartis/workbook') {
+      const bytes = await readBody(req, 40 * 1024 * 1024);
+      if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('Нужен файл Smartis .xlsx');
+      const fileName = decodeURIComponent(req.headers['x-file-name'] || 'smartis.xlsx');
+      if (!/\.xlsx$/i.test(fileName)) throw new Error('Поддерживается только файл .xlsx');
+      const tempPath = path.join(current().userDir, `smartis-${crypto.randomBytes(8).toString('hex')}.tmp`);
+      try {
+        fs.writeFileSync(tempPath, bytes, { mode: 0o600, flag: 'wx' });
+        const parsed = await runPython(tempPath);
+        if (parsed.error) throw new Error(parsed.error);
+        current().smartisWorkbook = { fileName, sheets: parsed.sheets };
+      } finally { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); }
+      current().smartisPreviews.clear();
+      return send(res, 200, { fileName, sheets: current().smartisWorkbook.sheets.map(sheet => ({ name: sheet.name, rows: sheet.rows.length })) });
+    }
+    if (req.method === 'POST' && req.url === '/api/smartis/preview') {
+      const body = JSON.parse((await readBody(req, 20000)).toString('utf8'));
+      if (!googleSheets.hasSession(current())) throw new Error('Сначала подключи Google-аккаунт.');
+      const sourceSheet = current().smartisWorkbook?.sheets?.find(sheet => sheet.name === body.sourceSheet);
+      if (!sourceSheet) throw new Error('Загрузи Excel Smartis и выбери лист.');
+      const prepared = prepareSmartisRows(sourceSheet, { manualSource: body.manualSource === 'vk' ? 'vk' : 'auto' });
+      const target = await smartisTarget(current(), body.spreadsheetId || SMARTIS_CONFIG.target.spreadsheetId, body.sheetId ?? SMARTIS_CONFIG.target.sheetId);
+      const currentTarget = await readSmartisTarget(current(), target);
+      const reconciliation = reconcileSmartis(prepared, currentTarget.rows);
+      const previewId = crypto.randomUUID();
+      const additions = reconciliation.additions;
+      current().smartisPreviews.clear();
+      current().smartisPreviews.set(previewId, { target, additions, sourceDigest: smartisDigest(additions.map(lead => rowsForTarget([lead])[0])), targetDigest: smartisDigest(currentTarget.rows), targetLastIndex: currentTarget.lastDataIndex, createdAt: Date.now(), fileName: current().smartisWorkbook.fileName, sourceSheet: sourceSheet.name });
+      return send(res, 200, { previewId, target, source: { fileName: current().smartisWorkbook.fileName, sheet: sourceSheet.name, sourceRows: prepared.sourceRows, importable: prepared.records.length, missingPersonIdRows: prepared.missingPersonIdRows, duplicates: prepared.duplicateIds.slice(0,100), duplicateCount: prepared.duplicateIds.length, conflicts: prepared.conflictingIds.slice(0,100), conflictCount: prepared.conflictingIds.length, ignored: prepared.ignored.slice(0,100), ignoredCount: prepared.ignored.length, warnings: prepared.warnings.slice(0,100), warningCount: prepared.warnings.length }, reconciliation: { additions: additions.slice(0,500).map(summarizeLead), additionCount: additions.length, alreadyPresentCount: reconciliation.existingIds.length, existingMismatchCount: reconciliation.existingMismatchIds.length, duplicatedTargetCount: reconciliation.duplicatedTarget.length, currentRowCount: reconciliation.currentRowCount, nextRowNumber: currentTarget.lastDataIndex + 2 }, writeAvailable: additions.length > 0 });
+    }
+    if (req.method === 'POST' && req.url === '/api/smartis/append') {
+      const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
+      if (body.confirm !== true) throw new Error('Перед добавлением требуется явное подтверждение.');
+      const preview = current().smartisPreviews.get(String(body.previewId || ''));
+      if (!preview || Date.now() - preview.createdAt > 30 * 60_000) throw new Error('Предпросмотр устарел. Подготовь сверку заново.');
+      return await withSmartisSheetLock(`${preview.target.spreadsheetId}:${preview.target.sheetId}`, async () => {
+        const latest = await readSmartisTarget(current(), preview.target);
+        if (smartisDigest(latest.rows) !== preview.targetDigest || latest.lastDataIndex !== preview.targetLastIndex) throw new Error('Целевая таблица изменилась после предпросмотра. Перечитай лист и сверь данные заново.');
+        const existingCheck = reconcileSmartis({ records: preview.additions }, latest.rows);
+        if (existingCheck.additions.length !== preview.additions.length) throw new Error('Часть лидов уже добавлена другим пользователем. Пересобери предпросмотр для защиты от дублей.');
+        const values = rowsForTarget(preview.additions);
+        if (smartisDigest(values) !== preview.sourceDigest) throw new Error('Данные предпросмотра не прошли контрольную сумму.');
+        const startIndex = latest.lastDataIndex + 1;
+        const endIndex = startIndex + values.length;
+        const requests = [];
+        if (endIndex > preview.target.gridRows) requests.push({ insertDimension: { range: { sheetId: preview.target.sheetId, dimension: 'ROWS', startIndex: preview.target.gridRows, endIndex: endIndex }, inheritFromBefore: true } });
+        if (startIndex > 0) requests.push({ copyPaste: { source: { sheetId: preview.target.sheetId, startRowIndex: startIndex - 1, endRowIndex: startIndex, startColumnIndex: 0, endColumnIndex: 11 }, destination: { sheetId: preview.target.sheetId, startRowIndex: startIndex, endRowIndex, startColumnIndex: 0, endColumnIndex: 11 }, pasteType: 'PASTE_FORMAT', pasteOrientation: 'NORMAL' } });
+        requests.push({ updateCells: { range: { sheetId: preview.target.sheetId, startRowIndex: startIndex, endRowIndex, startColumnIndex: 0, endColumnIndex: 11 }, rows: values.map(row => ({ values: row.map(value => ({ userEnteredValue: { stringValue: String(value ?? '') } })) })), fields: 'userEnteredValue' } });
+        await googleSheets.batchUpdate(current(), preview.target.spreadsheetId, requests);
+        const verified = await readSmartisTarget(current(), preview.target);
+        const expected = values.map(row => row.map(value => String(value ?? '')));
+        const actual = verified.rows.slice(startIndex, endIndex).map(row => Array.from({ length: 11 }, (_, index) => String(row[index] ?? '')));
+        const ok = smartisDigest(actual) === smartisDigest(expected);
+        appendSmartisHistory(current(), { outcome: ok ? 'verified' : 'verification_failed', spreadsheetId: preview.target.spreadsheetId, sheetId: preview.target.sheetId, sheetTitle: preview.target.sheetTitle, fileName: preview.fileName, sourceSheet: preview.sourceSheet, count: values.length, firstRow: startIndex + 1, lastRow: endIndex, verified: ok });
+        current().smartisPreviews.delete(String(body.previewId));
+        if (!ok) throw new Error('Google Sheets приняла запрос, но построчная сверка не подтвердила результат. Не повторяй импорт до проверки листа.');
+        return send(res, 200, { ok: true, appended: values.length, firstRow: startIndex + 1, lastRow: endIndex, verifiedRows: actual.length, message: `Добавлено ${values.length} лидов. Все ${actual.length} строк и 11 колонок проверены повторным чтением.` });
+      });
+    }
+    if (req.method === 'GET' && req.url === '/api/smartis/history') {
+      if (!googleSheets.hasSession(current())) throw new Error('Сначала подключи Google-аккаунт.');
+      const historyPath = path.join(current().userDir, 'smartis-history.jsonl');
+      const entries = fs.existsSync(historyPath) ? fs.readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean).slice(-50).reverse().map(line => { try { const item = JSON.parse(line); return { at: item.at, outcome: item.outcome, spreadsheetId: item.spreadsheetId, sheetTitle: item.sheetTitle, fileName: item.fileName, sourceSheet: item.sourceSheet, count: item.count, firstRow: item.firstRow, lastRow: item.lastRow, verified: item.verified }; } catch { return null; } }).filter(Boolean) : [];
+      return send(res, 200, { entries });
+    }
     if (req.method === 'POST' && req.url === '/api/admin/login') {
       const body = JSON.parse((await readBody(req, 4000)).toString('utf8'));
       const username = String(body.username || '').trim();
@@ -420,7 +549,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/browser-open') {
       const body = JSON.parse((await readBody(req, 20000)).toString('utf8'));
       const url = new URL(String(body.url || ''));
-      if (url.protocol !== 'https:' || !['core.ag-media.ru', 'reports.core.ag-media.ru'].includes(url.hostname)) throw new Error('Можно открыть только Core или DataLens.');
+      if (url.protocol !== 'https:' || !['core.ag-media.ru', 'reports.core.ag-media.ru', 'accounts.google.com'].includes(url.hostname)) throw new Error('Можно открыть только Core, DataLens или Google OAuth.');
       if (!current().context) throw new Error('Сначала подключи браузер');
       let page = current().context.pages()[Number(body.pageIndex)];
       if (!page || page.isClosed()) page = await current().context.newPage();
@@ -433,7 +562,7 @@ const server = http.createServer(async (req, res) => {
       if (!current().context || !current().context.pages()[Number(body.pageIndex)]) throw new Error('Вкладка не подключена');
       const page = current().context.pages()[Number(body.pageIndex)];
       const host = new URL(page.url()).hostname;
-      if (!['core.ag-media.ru','reports.core.ag-media.ru','auth.ag-media.ru','accounts.google.com','passport.yandex.ru','login.yandex.ru'].includes(host)) throw new Error('Управление разрешено только для Core, DataLens и известных страниц их авторизации.');
+      if (!['core.ag-media.ru','reports.core.ag-media.ru','auth.ag-media.ru','accounts.google.com','myaccount.google.com','consent.google.com','passport.yandex.ru','login.yandex.ru'].includes(host)) throw new Error('Управление разрешено только для Core, DataLens и известных страниц их авторизации.');
       if (body.action === 'click') {
         const x = Number(body.x), y = Number(body.y);
         if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > 1440 || y > 1000) throw new Error('Координаты вне встроенной страницы.');
@@ -1011,11 +1140,14 @@ async function clearSessionWorkspace(state) {
   state.workbookFileName = null;
   state.activeReport = null;
   state.proposals.clear();
+  googleSheets.disconnect(state);
+  state.smartisWorkbook = null;
+  state.smartisPreviews.clear();
   for (const target of [state.profileDir, state.workbookPath]) {
     try { fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* A later fresh session still receives a new isolated path. */ }
   }
   try {
-    for (const name of fs.readdirSync(state.userDir)) if (/^upload-[0-9a-f]+\.tmp$/i.test(name)) fs.rmSync(path.join(state.userDir, name), { force: true });
+    for (const name of fs.readdirSync(state.userDir)) if (/^(?:upload|smartis)-[0-9a-f]+\.tmp$/i.test(name)) fs.rmSync(path.join(state.userDir, name), { force: true });
   } catch { /* The session directory may already be gone. */ }
 }
 
