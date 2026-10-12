@@ -14,6 +14,10 @@ local fixtures; this is not verification of the deployed revision or live CRM.
   four seconds reset the user's selection to the first tab. Preserve the
   selected value while it remains available. A complete-UI Chromium regression
   test reproduced the failure before the fix and also checks tab disappearance.
+- **Reading during navigation:** the UI allowed reading Core before the requested
+  plan finished opening. Opening now disables duplicate opens and plan reads,
+  including during background refresh. The browser regression test holds the
+  navigation response until these states have been checked.
 - **Idle browsers never expired while the UI stayed open:** authentication
   refreshed `lastActivity` on every background state/screenshot request. Only
   the existing list of browser actions now records activity. Added a regression
@@ -26,6 +30,9 @@ local fixtures; this is not verification of the deployed revision or live CRM.
 - **No automated repository checks:** added a read-only GitHub Actions workflow
   for Windows and Ubuntu 24.04, Node.js 20/24, Python, Chromium, tests, smoke
   startup, and packaging. It contains no deployment steps.
+- **Cross-platform test synchronization:** wait for the source mutation delivered
+  through iframe `postMessage` and for the uploaded Excel preview. These checks
+  still assert the expected values and retain the stale-source save protections.
 
 ## Verification
 

@@ -642,6 +642,7 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
     await uiPage.waitForFunction(() => document.querySelector('#connection strong')?.textContent === 'Браузер подключён');
     assert.deepEqual(pageErrors, [], 'application UI must initialize without JavaScript errors');
     await uiPage.locator('#file').setInputFiles(planWorkbook);
+    await uiPage.locator('#excel-preview table').waitFor({ state: 'visible' });
     await uiPage.locator('#plan-url').fill('https://core.ag-media.ru/documents/mediaplans/999/edit');
     await uiPage.locator('#open-plan').click();
     await uiPage.locator('#read-plan').click();
