@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Фиктивный медиаплан для интеграционного теста</title></head>
+<body>
+  <button id="save">Сохранить</button><span id="save-state">Не сохранено</span>
+  <table id="mediaplan">
+    <thead><tr>
+      <th>Описание</th><th>Площадка</th><th>Показы, тыс.</th><th>CR1, %</th><th>CR2, %</th><th>CR3, %</th><th>Клики, шт</th><th>Все лиды, шт</th><th>Целевые лиды, шт</th><th>CPM</th><th>Бюджет, руб.</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <script>
+    const savedState = localStorage.getItem('mock-mediaplan');
+    document.getElementById('save-state').textContent = savedState ? 'Сохранено' : 'Не сохранено';
+    const initial = [
+      ['', 'Яндекс медийная реклама CPM', '', '', '', '', '', '', '', '', ''],
+      ['ЖК Альфа', '', '50', '0.3', '0.1', '0.2', '900', '10', '5', '100', '7250'],
+      ['ЖК Бета', '', '11', '0.2', '1', '1', '123', '1', '1', '88', '1320']
+    ];
+    const state = JSON.parse(savedState || 'null') || initial;
+    const tbody = document.getElementById('rows');
+    function render() {
+      tbody.replaceChildren();
+      state.forEach((values,rowIndex)=>{
+        const tr=document.createElement('tr');
+        values.forEach((value,columnIndex)=>{
+          const td=document.createElement('td');
+          const span=document.createElement('span');
+          span.tabIndex=0;
+          span.textContent=value;
+          span.addEventListener('click',()=>{
+            const input=document.createElement('input');
+            input.value=value;
+            td.replaceChildren(input);
+            input.focus();
+            input.addEventListener('keydown',event=>{
+              if(event.key!=='Enter')return;
+              state[rowIndex][columnIndex]=input.value;
+              if(rowIndex>0&&(columnIndex===2||columnIndex===9)){
+                const impressions=Number(state[rowIndex][2]),cpm=Number(state[rowIndex][9]);
+                if(Number.isFinite(impressions)&&Number.isFinite(cpm)){
+                  state[rowIndex][10]=(impressions*cpm).toFixed(2).replace(/\.00$/,'');
+                  const budgetCell=tbody.rows[rowIndex].cells[10];
+                  if(budgetCell)budgetCell.querySelector('span').textContent=state[rowIndex][10];
+                }
+              }
+              const updated=document.createElement('span');
+              updated.tabIndex=0;
+              updated.textContent=input.value;
+              updated.addEventListener('click',()=>{});
+              td.replaceChildren(updated);
+            });
+          });
+          td.append(span);
+          tr.append(td);
+        });
+        tbody.append(tr);
+      });
+    }
+    render();
+    document.getElementById('save').addEventListener('click',()=>{localStorage.setItem('mock-mediaplan',JSON.stringify(state));document.getElementById('save-state').textContent='Сохранено';});
+  </script>
+</body>
+</html>

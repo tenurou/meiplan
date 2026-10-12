@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Фиктивный медиаплан для интеграционного теста факта</title></head>
+<body>
+  <button id="save">Сохранить</button><span id="save-state">Не сохранено</span>
+  <table id="mediaplan">
+    <thead><tr>
+      <th>Описание</th><th>Бюджет, руб.</th><th>CR1, %</th><th>Клики, шт</th><th>Все лиды, шт</th><th>Целевые лиды, шт</th><th>CR2, %</th><th>CR3, %</th><th>Показы, тыс.</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <script>
+    const savedState = localStorage.getItem('mock-fact-mediaplan');
+    document.getElementById('save-state').textContent = savedState ? 'Сохранено' : 'Не сохранено';
+    const initial = [['ЖК Альфа', '1', '0.01', '1', '1', '1', '0.01', '0.01', '1']];
+    const state = JSON.parse(savedState || 'null') || initial;
+    const tbody = document.getElementById('rows');
+    function render() {
+      tbody.replaceChildren();
+      state.forEach((values,rowIndex)=>{
+        const tr=document.createElement('tr');
+        values.forEach((value,columnIndex)=>{
+          const td=document.createElement('td');
+          const span=document.createElement('span');
+          span.tabIndex=0;
+          span.textContent=value;
+          span.addEventListener('click',()=>{
+            const input=document.createElement('input');
+            input.value=value;
+            td.replaceChildren(input);
+            input.focus();
+            input.addEventListener('keydown',event=>{
+              if(event.key!=='Enter')return;
+              state[rowIndex][columnIndex]=input.value;
+              const updated=document.createElement('span');
+              updated.tabIndex=0;
+              updated.textContent=input.value;
+              td.replaceChildren(updated);
+            });
+          });
+          td.append(span);
+          tr.append(td);
+        });
+        tbody.append(tr);
+      });
+    }
+    render();
+    document.getElementById('save').addEventListener('click',()=>{localStorage.setItem('mock-fact-mediaplan',JSON.stringify(state));document.getElementById('save-state').textContent='Сохранено';});
+  </script>
+</body>
+</html>

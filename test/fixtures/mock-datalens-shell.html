@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Оболочка тестового отчёта</title></head>
+<body>
+  <div class="dash-fixed-header__controls">
+    <div class="filter-shell"><div><span class="chartkit-control-item__title-text">Текущий месяц</span></div><div class="yc-select-control" onclick="document.querySelector('.g-popup_open').hidden=false;document.querySelector('.g-popup_open button').classList.add('yc-select-item_selected')">Сентябрь</div></div>
+    <div class="g-popup_open" hidden><button onclick="document.querySelector('.yc-select-control').textContent='Нет выбранных значений';this.classList.remove('yc-select-item_selected');this.parentElement.hidden=true">Сентябрь</button></div>
+    <input id="report-date" placeholder="ДД.ММ.ГГГГ - ДД.ММ.ГГГГ" value="01.01.2026 - 31.01.2026">
+  </div>
+  <button id="change-source" style="position:fixed;left:5px;top:5px;width:220px;height:34px;z-index:999999" onclick="document.querySelector('iframe').contentWindow.postMessage('mutate-source','*')">Изменить тестовый источник</button>
+  <iframe title="DataLens dashboard" src="https://reports.core.ag-media.ru/fixture/datalens-frame" style="width:1200px;height:900px;border:0"></iframe>
+</body>
+</html>

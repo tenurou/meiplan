@@ -1,0 +1,26 @@
+[Unit]
+Description=AGM Plan Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agmapp
+Group=agmapp
+WorkingDirectory=/opt/agm-plan-assistant
+EnvironmentFile=/etc/agm-plan-assistant.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/agm-plan-assistant/server.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/agm-plan-assistant
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

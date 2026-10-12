@@ -1,0 +1,26 @@
+# Runtime state includes credentials, CRM sessions, uploaded plans, and feedback.
+/data/
+
+# Local configuration, credentials, logs, temporary and generated files.
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+*.bak
+*.pem
+*.key
+*.p12
+*.pfx
+*.xlsx
+*.xls
+*.csv
+*.zip
+__pycache__/
+node_modules/
+dist/
+.pytest_cache/
+.venv/
+venv/
+playwright-report/
+test-results/

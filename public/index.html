@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="agm-token" content="__APP_TOKEN__">
+  <meta name="theme-color" content="#101014">
+  <title>Авто-МП</title>
+  <link rel="stylesheet" href="/public/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img class="brand-mark" src="/public/mascot.png" alt="" width="46" height="46"><div><strong>Авто-МП</strong><small>Помощник медиапланов</small></div></div>
+    <div class="topbar-actions"><div class="privacy"><span class="green-dot"></span> Личные сессии изолированы</div><button id="theme-toggle" class="button secondary theme-toggle" type="button" aria-pressed="true" aria-label="Переключить на светлую тему"><span aria-hidden="true">☀</span> Светлая тема</button></div>
+  </header>
+  <main>
+    <section class="hero">
+      <div><div class="eyebrow">РАБОЧИЙ ЦИКЛ</div><h1>Медиаплан без ручной рутины</h1><p>Импорт из Excel, факт из DataLens, сверка и внесение в Core с проверкой каждой строки.</p></div>
+      <button id="connect" class="button primary"><span class="icon">↗</span> Подключить браузер</button>
+    </section>
+    <section id="connection" class="connection card"><div class="state-icon">◉</div><div><strong>Браузер не подключён</strong><span>Страницы Core и DataLens откроются во встроенной вкладке приложения.</span></div><span class="status-chip muted">НЕ ПОДКЛЮЧЁН</span></section>
+    <section class="browser-panel card">
+      <div class="browser-toolbar"><div><strong>Рабочий браузер</strong><small id="browser-caption">Подключи браузер, затем открой заданную ссылку</small></div><select id="browser-page" disabled aria-label="Вкладка браузера"><option>Нет открытых вкладок</option></select><button id="browser-new-tab" class="button ghost" disabled>Новая вкладка</button></div>
+      <div id="browser-viewport" class="browser-viewport" tabindex="0" title="Нажми и используй страницу мышью и клавиатурой"><div id="browser-empty" class="browser-empty" aria-hidden="true"></div><img id="browser-image" alt="Встроенная вкладка браузера" draggable="false" hidden></div>
+      <div class="browser-hint">Кликни по странице, чтобы управлять ею. Используй Ctrl+V для вставки текста из буфера обмена.</div>
+    </section>
+    <div class="steps">
+      <section class="card step-card">
+        <div class="step-head"><span class="step-number">01</span><div><h2>План из Excel</h2><p>Выбери книгу и лист с планом</p></div></div>
+        <label class="dropzone" id="dropzone"><input id="file" type="file" accept=".xlsx"><span class="upload-icon">↑</span><strong>Перетащи файл сюда</strong><small>или выбери файл .xlsx</small><em id="file-name"></em></label>
+        <div class="select-row"><label for="sheet">Лист</label><select id="sheet" disabled><option>Сначала загрузи Excel</option></select></div>
+        <div class="select-row"><label for="header-row">Строка заголовков</label><input id="header-row" type="number" min="1" value="1" disabled></div>
+        <div class="preview-mini" id="excel-preview"><span class="empty">Здесь появится предпросмотр таблицы</span></div>
+        <button id="prepare-plan" class="button secondary full-action" disabled>Подготовить перенос плана</button>
+      </section>
+      <section class="card step-card">
+        <div class="step-head"><span class="step-number">02</span><div><h2>Медиаплан в Core</h2><p>Вставь точную ссылку на МП</p></div></div>
+        <div class="input-action"><input id="plan-url" type="url" placeholder="https://core.ag-media.ru/documents/mediaplans/ID/edit"><button id="open-plan" class="button secondary">Открыть</button></div>
+        <div class="select-row"><label for="core-page">Вкладка с МП</label><select id="core-page" disabled><option>Сначала подключи браузер</option></select><button id="read-plan" class="button ghost" disabled>Считать таблицу</button></div>
+        <div class="preview-mini" id="plan-preview"><span class="empty">Таблица МП появится после открытия</span></div>
+      </section>
+      <section class="card step-card wide">
+        <div class="step-head"><span class="step-number">03</span><div><h2>Факт из DataLens</h2><p>Необязательно: укажи точную ссылку на отчёт и фильтры сам</p></div></div>
+        <div class="input-action report-url-row"><input id="report-url" type="url" placeholder="Ссылка на конкретный отчёт DataLens"><button id="open-report" class="button secondary">Открыть отчёт</button><button id="capture" class="button ghost" disabled>Считать таблицу</button></div>
+        <div class="filter-note"><span>i</span><div><strong>Таблица и месяц подбираются по МП</strong><small>Сопоставляем «Объект продвижения» и показатели с названиями строк МП. Если период плана определён однозначно, выставляем месяц и снимаем «Текущий месяц».</small></div></div>
+        <div id="report-options" class="report-options"></div>
+        <div class="preview-mini report-preview" id="report-preview"><span class="empty">Таблица отчёта появится здесь</span></div>
+        <button id="prepare-fact" class="button secondary full-action" disabled>Подготовить перенос факта</button>
+      </section>
+    </div>
+    <section class="card controls">
+      <div><div class="eyebrow">ПРАВИЛА КОНТРОЛЯ</div><h2>Сверка перед внесением</h2><p>Любые изменения сначала появятся в списке. Приложение не будет угадывать неоднозначные строки.</p></div>
+      <div class="rule-grid">
+        <label class="rule"><span><strong>Допуск по сумме</strong><small>Выбери от 1 до 10 ₽</small></span><span class="unit-input"><input id="amount-tolerance" type="number" min="1" max="10" step="1" value="10"><i>₽</i></span></label>
+        <label class="rule"><span><strong>Лиды должны совпасть</strong><small>Целое число, без допуска</small></span><span class="rule-status">СТРОГО</span><input type="checkbox" id="exact-leads" checked disabled hidden></label>
+        <label class="rule"><span><strong>Показы: штуки → тысячи</strong><small>Перевод для полей МП в тыс.</small></span><span class="rule-status">÷ 1 000</span><input type="checkbox" id="thousand-impressions" checked disabled hidden></label>
+        <label class="rule skip-rule"><span><strong>Всегда пропускать AdRiver и Botfaqtor</strong><small>Никогда не сверять и не менять</small></span><span class="rule-status">ИСКЛЮЧЕНО</span><input type="checkbox" id="skip-excluded" checked disabled hidden></label>
+        <div class="rule"><span><strong>АК выставляется вручную</strong><small>Приложение не переносит и не меняет АК</small></span><span class="rule-status">ВРУЧНУЮ</span></div>
+        <div class="rule"><span><strong>Рекламный сбор выставляется вручную</strong><small>Приложение не переносит и не меняет рекламный сбор</small></span><span class="rule-status">ВРУЧНУЮ</span></div>
+      </div>
+    </section>
+    <section class="card audit" id="audit">
+      <div class="audit-head"><div><div class="eyebrow">ПРОВЕРКА</div><h2>Сводка совпадений</h2></div><span class="status-chip muted" id="audit-status">ЖДЁТ ДАННЫЕ</span></div>
+      <div id="audit-results" class="audit-results"><div class="empty-state"><span>⌁</span><strong>Нужно загрузить источник и считать таблицу МП</strong><small>После этого здесь покажем несовпадения, пропущенные строки и суммы для проверки.</small></div></div>
+    </section>
+    <section class="card feedback" aria-labelledby="feedback-title">
+      <div class="feedback-copy"><div class="eyebrow">ОБРАТНАЯ СВЯЗЬ</div><h2 id="feedback-title">Нашли ошибку или есть идея?</h2><p>Сообщение попадёт в журнал приложения. Администратор увидит его в панели ниже.</p></div>
+      <form id="feedback-form" class="feedback-form">
+        <label>Тема<select name="category" required><option value="">Выберите тему</option><option>Ошибка</option><option>Идея</option><option>Вопрос</option><option>Другое</option></select></label>
+        <label class="feedback-message">Сообщение<textarea name="message" minlength="3" maxlength="4000" rows="4" required placeholder="Опишите, что случилось или что можно улучшить"></textarea></label>
+        <label class="feedback-contact">Контакт для ответа <span>(необязательно)</span><input name="contact" maxlength="200" type="text" autocomplete="email" placeholder="Почта, Telegram или телефон"></label>
+        <label class="feedback-attachments">Файлы <span>(до 5 файлов, по 10 МБ)</span><input name="attachments" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.pdf,.xlsx,.xls,.docx,.doc,.csv,.txt,.zip"></label>
+        <div class="feedback-submit"><small id="feedback-status" role="status">Не указывайте пароли и коды входа.</small><button class="button secondary" type="submit">Отправить</button></div>
+      </form>
+    </section>
+    <section class="card feedback admin-entry" aria-labelledby="admin-entry-title">
+      <div class="feedback-copy"><div class="eyebrow">АДМИНИСТРИРОВАНИЕ</div><h2 id="admin-entry-title">Панель администратора</h2><p>Обычная работа с приложением не требует входа. Авторизация нужна только для просмотра обращений.</p></div>
+      <div>
+        <button class="button secondary" id="admin-login-toggle" type="button">Войти в админ-панель</button>
+        <form id="admin-login-form" class="feedback-form admin-login-form" hidden>
+          <label>Имя администратора<input name="username" autocomplete="username" required maxlength="64"></label>
+          <label>Пароль<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+          <div class="feedback-submit"><small id="admin-login-status" role="status">Пароль отправляется только по HTTPS и не сохраняется браузером.</small><button class="button secondary" type="submit">Войти</button></div>
+        </form>
+      </div>
+    </section>
+    <section class="card feedback" id="admin-feedback" aria-labelledby="admin-feedback-title" hidden>
+      <div class="feedback-copy"><div class="eyebrow">АДМИНИСТРАТОР</div><h2 id="admin-feedback-title">Обращения сотрудников</h2><p id="admin-feedback-status" role="status">Загружаю обращения…</p></div>
+      <div class="feedback-submit"><small>Показаны последние 500 обращений, новые сверху.</small><div class="admin-panel-actions"><button class="button secondary" id="refresh-feedback" type="button">Обновить</button><button class="button ghost" id="admin-logout" type="button">Выйти</button></div></div>
+      <div id="admin-feedback-list" class="audit-results"><div class="empty-state"><strong>Загружаю…</strong></div></div>
+    </section>
+    <footer><span>Авто-МП</span><span>Браузерные профили и загруженные книги разделены по сессиям браузера</span></footer>
+  </main>
+  <div id="toast" role="status"></div>
+  <script type="module" src="/public/app.js"></script>
+</body>
+</html>

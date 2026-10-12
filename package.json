@@ -1,0 +1,17 @@
+{
+  "name": "agm-plan-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "test:autonomy": "node --test test/autonomy.test.mjs",
+    "measure:resources": "node scripts/measure-browsers.mjs",
+    "package:source": "node scripts/package-release.mjs",
+    "users": "node scripts/users.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}

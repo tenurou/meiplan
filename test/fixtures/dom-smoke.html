@@ -1,0 +1,4 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AGM Playwright smoke</title></head>
+<body><main><h1 id="title">Headless browser ready</h1><label>Value <input id="value"></label><button id="run">Run interaction</button><output id="result">idle</output></main>
+<script>document.querySelector('#run').addEventListener('click',()=>{document.querySelector('#result').textContent=`clicked:${document.querySelector('#value').value}`})</script></body></html>

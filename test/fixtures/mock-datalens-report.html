@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Фиктивный DataLens для интеграционного теста</title></head>
+<body>
+  <h1>ЛСР · Тестовый факт</h1>
+  <table id="decoy"><thead><tr><th>Объект продвижения</th><th>Расход, руб.</th><th>Показы, шт</th><th>Клики, шт</th></tr></thead><tbody><tr><td>ЖК Другая очередь</td><td>1</td><td>1</td><td>1</td></tr></tbody></table>
+  <table id="fact">
+    <thead><tr>
+      <th>Объект продвижения</th><th>Расход с НДС, руб.</th><th>CTR, %</th><th>Клики, шт</th><th>Все лиды, шт</th><th>Целевые лиды, шт</th><th>CR1, %</th><th>CR2, %</th><th>CR3, %</th><th>Показы, шт</th>
+    </tr></thead>
+    <tbody><tr>
+      <td>ЖК Альфа</td><td>120000</td><td>0.42%</td><td>900</td><td>20</td><td>12</td><td>2.22%</td><td>60%</td><td>75%</td><td>140000</td>
+    </tr></tbody>
+  </table>
+  <script>window.addEventListener('message',event=>{if(event.data==='mutate-source')document.querySelector('#fact tbody tr td:nth-child(2)').textContent='120001';});</script>
+</body>
+</html>
