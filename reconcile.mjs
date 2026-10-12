@@ -246,5 +246,3 @@ export function verifyCoreChecks(checks, rows, { sameCellValue, parseDisplayNumb
     ok: verifiedChecks === cellResults.length && totalsVerified
   };
 }
-
-\n

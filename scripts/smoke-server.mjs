@@ -23,6 +23,7 @@ child.stdout.on('data', chunk => logs += chunk.toString());
 child.stderr.on('data', chunk => logs += chunk.toString());
 let status = null;
 let csrfToken = '';
+let sessionCookie = '';
 try {
   for (let attempt = 0; attempt < 40; attempt++) {
     if (child.exitCode !== null) break;
@@ -30,7 +31,10 @@ try {
       const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2000) });
       const html = await response.text();
       const token = html.match(/name="agm-token" content="([^"]+)"/)?.[1];
-      if (response.status === 200 && html.includes('id="feedback-form"') && token) { status = response.status; csrfToken = token; break; }
+      const cookie = response.headers.get('set-cookie')?.split(';')[0];
+      if (response.status === 200 && html.includes('id="feedback-form"') && token && cookie) {
+        status = response.status; csrfToken = token; sessionCookie = cookie; break;
+      }
       throw new Error(`Server returned HTTP ${response.status} or the page is missing its UI marker`);
     } catch (error) {
       if (error.message.includes('Server returned HTTP')) throw error;
@@ -38,7 +42,7 @@ try {
     }
   }
   if (status !== 200) throw new Error(`Server did not become ready. ${logs}`);
-  const stateResponse = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { 'X-AGM-Token': csrfToken }, signal: AbortSignal.timeout(2000) });
+  const stateResponse = await fetch(`http://127.0.0.1:${port}/api/state`, { headers: { 'X-AGM-Token': csrfToken, Cookie: sessionCookie }, signal: AbortSignal.timeout(2000) });
   if (!stateResponse.ok) throw new Error(`State endpoint returned HTTP ${stateResponse.status}`);
   console.log(`Server smoke check passed: HTTP ${status}, UI loaded, state endpoint HTTP ${stateResponse.status}, loopback port ${port}.`);
 } finally {

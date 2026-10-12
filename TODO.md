@@ -2,7 +2,7 @@
 
 This list describes known gaps; it is not authorization to modify production or expand product scope.
 
-- [ ] Create the private GitHub repository and push the reviewed initial commit (requires an authenticated GitHub session).
+- [x] Create the GitHub repository and push the initial source snapshot.
 - [ ] Invite maintainers using their GitHub accounts; grant Astra only the minimum required repository role.
 - [ ] Run the documented clean install and test workflow on Ubuntu 24.04 in a disposable environment.
 - [ ] Measure Chromium RSS/CPU on the actual VPS during a separately approved maintenance task.

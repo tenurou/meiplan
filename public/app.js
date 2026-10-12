@@ -69,9 +69,11 @@ function setConnection(connected, pages = []) {
   const chip = box.querySelector('.status-chip'); chip.textContent = !connected ? 'НЕ ПОДКЛЮЧЁН' : needsLogin ? 'НУЖЕН ВХОД' : 'ПОДКЛЮЧЁН'; chip.className = `status-chip ${!connected?'muted':needsLogin?'warn':'ok'}`;
   ['capture','read-plan'].forEach(id => $(id).disabled = !connected);
   const select = $('core-page');
+  const selectedCorePage = select.value;
   select.innerHTML = pages.length ? pages.map(p => { let host='about:blank'; try{host=new URL(p.url).hostname;}catch{} return `<option value="${p.i}">${esc(p.title || p.url)} · ${esc(host)}</option>`; }).join('') : '<option>Нет открытых вкладок</option>';
   select.disabled = !pages.length;
-  if (!pages.some(p=>p.i===Number(select.value)) && pages.length) select.selectedIndex=0;
+  if (pages.some(p => String(p.i) === selectedCorePage)) select.value = selectedCorePage;
+  else if (pages.length) select.selectedIndex = 0;
   const browserSelect=$('browser-page');
   browserSelect.innerHTML=pages.length?pages.map(p=>{let host='';try{host=new URL(p.url).hostname}catch{}return `<option value="${p.i}">${esc(p.title||host||p.url)} · ${esc(host)}</option>`}).join(''):'<option>Нет открытых вкладок</option>';
   browserSelect.disabled=!pages.length;

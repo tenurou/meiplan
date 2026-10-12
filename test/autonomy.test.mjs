@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { after, test } from 'node:test';
 import { createUserRecord, makeUserId, verifyBasicAuthorization, writeUsers } from '../auth.mjs';
-import { forceKillChromium } from '../browser-cleanup.mjs';
+import { forceKillChromium, recordBrowserActivity } from '../browser-cleanup.mjs';
 import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, verifyCoreChecks } from '../reconcile.mjs';
 import { auditIsClear, identityAlerts } from '../public/audit-status.js';
 import { relationRows } from '../public/relation-audit.js';
@@ -309,6 +309,19 @@ test('separate headless Chromium opens a fixture, reads DOM and interacts', asyn
     }, relationModule);
     assert.equal(browserRelations[0].state, 'Неоднозначно · DataLens: 2, МП: 1');
   } finally { await context.close(); }
+});
+
+test('background polling does not reset the idle browser deadline', () => {
+  const state = { lastActivity: 1000 };
+  for (const url of ['/api/state', '/api/browser-snapshot?pageIndex=0', '/public/app.js', '/api/unknown']) {
+    recordBrowserActivity(state, url, 61 * 60 * 1000);
+  }
+  assert.equal(state.lastActivity, 1000, 'an open but unused UI must still allow idle cleanup');
+  for (const url of ['/api/connect', '/api/browser-action', '/api/read-plan', '/api/capture', '/api/apply', '/api/save']) {
+    state.lastActivity = 1000;
+    recordBrowserActivity(state, url, 5000);
+    assert.equal(state.lastActivity, 5000, `${url} must keep an active browser alive`);
+  }
 });
 
 test('stuck Chromium can be terminated by its isolated profile path', async () => {

@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createLicenseService } from './licensing.mjs';
 import { makeUserId, readUsers, verifyBasicAuthorization } from './auth.mjs';
-import { forceKillChromium } from './browser-cleanup.mjs';
+import { forceKillChromium, recordBrowserActivity } from './browser-cleanup.mjs';
 import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, verifyCoreChecks } from './reconcile.mjs';
 import { calculationModel, corePlacementGroup, eligiblePlanMetrics, isManualEntryHeader, planMetric, planPlacementGroup } from './public/plan-rules.js';
 import { parseNumericValue } from './public/numeric.js';
@@ -328,7 +328,6 @@ async function authenticateRequest(req, res) {
     res.setHeader('Set-Cookie', `agm-session=${sessionToken}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict${secure}`);
   }
   const state = sessions.get(id) || sessionFor({ username: `staff-${id.slice(0, 8)}`, key: id, role: 'user', sessionId: id });
-  state.lastActivity = Date.now();
   await loadUserData(state);
   return state;
 }
@@ -354,7 +353,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (!req.url?.startsWith('/api/')) return send(res, 404, { error: 'Не найдено' });
   if (req.headers['x-agm-token'] !== state.secret) return send(res, 403, { error: 'Обнови страницу приложения.' });
-  if (/^\/api\/(?:connect|new-tab|browser-open|browser-action|open-plan|capture|read-plan|inspect-page|select-view|inspect-text|open-filter|clear-current-month|set-report-period|goto-report-tab|open-report-tab|use-report-table|prepare-apply|apply|save)(?:\?|$)/.test(req.url || '')) state.lastActivity = Date.now();
+  recordBrowserActivity(state, req.url);
 
   try {
     if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false } });

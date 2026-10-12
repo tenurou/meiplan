@@ -85,5 +85,3 @@ for (const count of [1, 2, 3]) {
     for (const context of contexts) if (context._agmTempProfile) fs.rmSync(context._agmTempProfile, { recursive: true, force: true });
   }
 }
-
-\n
