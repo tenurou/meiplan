@@ -34,7 +34,19 @@ const host = process.env.AGM_HOST || '127.0.0.1';
 const port = Number(process.env.AGM_PORT || 8765);
 const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host.toLowerCase());
 const publicOrigin = (process.env.AGM_PUBLIC_ORIGIN || '').replace(/\/$/, '');
+const smartisBridgePath = path.join(dataDir, 'smartis-apps-script.json');
+let smartisBridgeSettings = {};
+if (fs.existsSync(smartisBridgePath)) {
+  try {
+    const stored = JSON.parse(fs.readFileSync(smartisBridgePath, 'utf8'));
+    if (typeof stored.url === 'string' && typeof stored.secret === 'string') smartisBridgeSettings = stored;
+  } catch { console.warn('Saved Smartis Apps Script settings could not be loaded.'); }
+}
 const googleSheets = createGoogleSheetsService({ clientId: process.env.AGM_GOOGLE_CLIENT_ID || '', clientSecret: process.env.AGM_GOOGLE_CLIENT_SECRET || '', publicOrigin, serviceAccountEmail: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_EMAIL || '', serviceAccountPrivateKey: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '' });
+if (smartisBridgeSettings.url && smartisBridgeSettings.secret) {
+  try { googleSheets.configureAppsScript(smartisBridgeSettings.url, smartisBridgeSettings.secret); }
+  catch { smartisBridgeSettings = {}; console.warn('Saved Smartis Apps Script settings are invalid.'); }
+}
 const allowedHosts = new Set((process.env.AGM_ALLOWED_HOSTS || `127.0.0.1,localhost,${host}`).split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
 if (!isLoopback && (!users.length || !/^https:\/\//i.test(publicOrigin))) throw new Error('Для сетевого запуска задай AGM_USERS_FILE с пользователями и AGM_PUBLIC_ORIGIN=https://...; без них сервер остаётся loopback-only.');
 if (!isLoopback && !process.env.AGM_ALLOWED_HOSTS) throw new Error('Для сетевого запуска явно задай AGM_ALLOWED_HOSTS для reverse proxy.');
@@ -405,7 +417,20 @@ const server = http.createServer(async (req, res) => {
   recordBrowserActivity(state, req.url);
 
   try {
-    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleAuthMode: googleSheets.authMode, serviceAccountEmail: googleSheets.serviceAccountEmail, googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
+    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleAuthMode: googleSheets.authMode, appsScriptUrl: googleSheets.appsScriptUrl, serviceAccountEmail: googleSheets.serviceAccountEmail, googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
+    if (req.method === 'POST' && req.url === '/api/admin/smartis-apps-script') {
+      if (!current().adminUser || current().adminExpiresAt <= Date.now()) return send(res, 403, { error: 'Сначала войди в администраторскую панель.' });
+      const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
+      const url = String(body.url || '').trim(), secret = String(body.secret || '');
+      googleSheets.configureAppsScript(url, secret);
+      const tempPath = `${smartisBridgePath}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+      fs.writeFileSync(tempPath, JSON.stringify({ url, secret }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      fs.renameSync(tempPath, smartisBridgePath);
+      try { fs.chmodSync(smartisBridgePath, 0o600); } catch { /* Keep the owner-only file permissions where supported. */ }
+      smartisBridgeSettings = { url, secret };
+      for (const session of sessions.values()) { session.smartisPreviews.clear(); session.googleError = null; }
+      return send(res, 200, { ok: true, isAdmin: true, authMode: googleSheets.authMode });
+    }
     if (req.method === 'POST' && req.url === '/api/smartis/google/start') {
       current().googleError = null;
       return send(res, 200, { url: googleSheets.begin(current()) });

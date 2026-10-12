@@ -621,18 +621,22 @@ async function refreshState(){
     const s=await api('/api/state'); setConnection(s.connected,s.pages);
     if (s.smartis) {
       const serviceAccountMode = s.smartis.googleAuthMode === 'service_account';
-      $('smartis-google-connect').hidden = serviceAccountMode || !s.smartis.googleConfigured;
+      const appsScriptMode = s.smartis.googleAuthMode === 'apps_script';
+      $('smartis-google-connect').hidden = serviceAccountMode || appsScriptMode || !s.smartis.googleConfigured;
       $('smartis-google-connect').disabled = !s.smartis.googleConfigured || s.smartis.googleConnected;
       $('smartis-google-connect').textContent = s.smartis.googleConnected ? 'Google подключён' : 'Подключить Google';
-      $('smartis-google-disconnect').hidden = serviceAccountMode || !s.smartis.googleConnected;
+      $('smartis-google-disconnect').hidden = serviceAccountMode || appsScriptMode || !s.smartis.googleConnected;
       $('smartis-google-setup').hidden = s.smartis.googleConfigured;
-      $('smartis-connection').textContent = s.smartis.googleConnected ? serviceAccountMode ? 'СЕРВИСНЫЙ АККАУНТ' : 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
+      $('smartis-connection').textContent = s.smartis.googleConnected ? appsScriptMode ? 'APPS SCRIPT ПОДКЛЮЧЁН' : serviceAccountMode ? 'СЕРВИСНЫЙ АККАУНТ' : 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
       $('smartis-connection').className = `status-chip ${s.smartis.googleConnected?'ok':s.smartis.googleConfigured?'muted':'warn'}`;
-      $('smartis-google-message').textContent = s.smartis.googleError || (serviceAccountMode ? `Подключён сервисный аккаунт${s.smartis.serviceAccountEmail ? ` ${s.smartis.serviceAccountEmail}` : ''}; личный вход Google не нужен.` : s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : s.smartis.serviceAccountEmail ? `Сервисный аккаунт ${s.smartis.serviceAccountEmail} ещё не настроен полностью.` : 'Сервисный аккаунт Google не настроен администратором.');
+      $('smartis-google-message').textContent = s.smartis.googleError || (appsScriptMode ? 'Таблица доступна приложению через Apps Script. Отдельный Google-вход сотрудникам не нужен.' : serviceAccountMode ? `Подключён сервисный аккаунт${s.smartis.serviceAccountEmail ? ` ${s.smartis.serviceAccountEmail}` : ''}; личный вход Google не нужен.` : s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : 'Подключи Apps Script через панель администратора.');
+      $('smartis-apps-script-admin').hidden = !s.isAdmin;
+      if (s.isAdmin && s.smartis.appsScriptUrl) $('smartis-apps-script-admin').elements.url.value = s.smartis.appsScriptUrl;
       if (!s.smartis.googleConnected && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; }
     }
     $('admin-feedback').hidden = !s.isAdmin;
     $('admin-login-toggle').hidden = !!s.isAdmin;
+      if (!s.isAdmin && $('smartis-apps-script-admin').elements.secret.value) $('smartis-apps-script-admin').elements.secret.value = '';
     if (s.isAdmin) $('admin-login-form').hidden = true;
     if (s.isAdmin && !adminFeedbackLoaded) await loadAdminFeedback();
     if (s.workbook?.length && !sheets.length) {
@@ -743,7 +747,7 @@ $('admin-feedback-list').addEventListener('click',async event=>{
   finally{button.disabled=false;}
 });
 $('admin-logout').addEventListener('click',async()=>{
-  try{await api('/api/admin/logout',{method:'POST',body:'{}'});adminFeedbackLoaded=false;$('admin-feedback').hidden=true;$('admin-login-toggle').hidden=false;$('admin-login-form').hidden=true;}
+  try{await api('/api/admin/logout',{method:'POST',body:'{}'});adminFeedbackLoaded=false;$('admin-feedback').hidden=true;$('admin-login-toggle').hidden=false;$('admin-login-form').hidden=true;$('smartis-apps-script-admin').elements.secret.value='';}
   catch(error){toast(error.message);}
 });
 ['exact-leads','thousand-impressions','skip-excluded'].forEach(id=>$(id).addEventListener('change',runAudit));
@@ -756,6 +760,23 @@ document.querySelectorAll('.app-tab').forEach(button=>button.addEventListener('c
   if(button.dataset.view==='smartis-view')smartisRefreshHistory();
 }));
 $('smartis-google-connect').addEventListener('click',smartisOpenGoogle);
+$('smartis-generate-secret').addEventListener('click',async()=>{
+  const bytes=crypto.getRandomValues(new Uint8Array(32));
+  const secret=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
+  const form=$('smartis-apps-script-admin');form.elements.secret.value=secret;
+  try{await navigator.clipboard.writeText(secret);$('smartis-apps-script-status').textContent='Ключ создан и скопирован. Вставь его также в строку SHARED_SECRET шаблона Apps Script.';}
+  catch{$('smartis-apps-script-status').textContent='Ключ создан. Скопируй его и вставь в строку SHARED_SECRET шаблона Apps Script.';}
+});
+$('smartis-apps-script-admin').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const form=event.currentTarget,button=form.querySelector('button[type="submit"]'),status=$('smartis-apps-script-status');
+  button.disabled=true;status.textContent='Сохраняю закрытые настройки и подключаю таблицу…';
+  try{
+    const result=await api('/api/admin/smartis-apps-script',{method:'POST',body:JSON.stringify({url:form.elements.url.value.trim(),secret:form.elements.secret.value})});
+    form.elements.secret.value='';status.textContent='Настройки сохранены на сервере. Проверь таблицу кнопкой «Проверить таблицу».';await refreshState();
+  }catch(error){status.textContent=error.message;}
+  finally{button.disabled=false;}
+});
 $('smartis-google-disconnect').addEventListener('click',async()=>{
   try{await api('/api/smartis/google/disconnect',{method:'POST',body:'{}'});smartisPreview=null;$('smartis-append').disabled=true;await refreshState();$('smartis-google-message').textContent='Google отключён в этой сессии.';}
   catch(error){toast(error.message);}

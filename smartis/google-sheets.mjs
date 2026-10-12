@@ -23,6 +23,8 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   const authMode = serviceAccountConfigured ? 'service_account' : userOAuthConfigured ? 'user_oauth' : 'not_configured';
   const callbackUrl = userOAuthConfigured ? `${publicOrigin.replace(/\/$/, '')}/api/smartis/google/callback` : '';
   const flows = new Map();
+  let bridgeUrl = '';
+  let bridgeSecret = '';
   let serviceToken = null;
   let serviceTokenExpiresAt = 0;
   let serviceTokenPromise = null;
@@ -52,7 +54,26 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
     finally { serviceTokenPromise = null; }
   }
 
+  function configureAppsScript(url, secret) {
+    const parsed = new URL(String(url || ''));
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'script.google.com' || !/^\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(parsed.pathname)) throw new Error('Укажи URL развёрнутого Apps Script вида https://script.google.com/macros/s/…/exec.');
+    if (typeof secret !== 'string' || secret.length < 32 || secret.length > 512) throw new Error('Общий ключ должен содержать не менее 32 символов.');
+    bridgeUrl = parsed.toString();
+    bridgeSecret = secret;
+  }
+
+  async function bridgeRequest(action, args = {}) {
+    if (!bridgeUrl || !bridgeSecret) throw new Error('Apps Script не подключён администратором.');
+    const response = await fetch(bridgeUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: bridgeSecret, action, ...args }), signal: AbortSignal.timeout(40_000), redirect: 'follow' });
+    if (!response.ok) throw new Error(`Apps Script вернул HTTP ${response.status}.`);
+    let data;
+    try { data = await response.json(); } catch { throw new Error('Apps Script вернул пустой или неверный ответ. Проверь URL веб-приложения и его доступность.'); }
+    if (data?.ok === false) throw new Error(String(data.error || 'Apps Script отклонил запрос.'));
+    return data;
+  }
+
   function begin(session) {
+    if (bridgeUrl && bridgeSecret) throw new Error('Google Sheets подключён через Apps Script; отдельный Google-вход не нужен.');
     if (serviceAccountConfigured) throw new Error('Google Sheets подключён сервисным аккаунтом приложения.');
     if (!userOAuthConfigured) throw new Error('Подключение Google ещё не настроено администратором приложения.');
     const state = crypto.randomBytes(32).toString('base64url');
@@ -107,6 +128,7 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   }
 
   async function accessToken(session) {
+    if (bridgeUrl && bridgeSecret) throw new Error('Google Sheets подключён через Apps Script.');
     if (serviceAccountConfigured) return getServiceAccountToken();
     if (!userOAuthConfigured) throw new Error('Подключение Google ещё не настроено администратором приложения.');
     const auth = session.googleAuth;
@@ -141,18 +163,21 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   }
 
   return {
-    configured,
-    authMode,
+    get configured() { return Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || userOAuthConfigured); },
+    get authMode() { return bridgeUrl && bridgeSecret ? 'apps_script' : authMode; },
     serviceAccountEmail,
+    get appsScriptUrl() { return bridgeUrl; },
+    configureAppsScript,
     callbackUrl,
     begin,
     callback,
     setCallbackError,
     disconnect,
-    hasSession: session => serviceAccountConfigured || Boolean(session.googleAuth?.accessToken),
+    hasSession: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken),
     spreadsheetId: safeId,
     async metadata(session, value) {
       const id = safeId(value);
+      if (bridgeUrl && bridgeSecret) return bridgeRequest('metadata', { spreadsheetId: id });
       const url = new URL(`${SHEETS_API}/${encodeURIComponent(id)}`);
       url.searchParams.set('fields', 'spreadsheetId,properties(title),sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))');
       const data = await request(session, url);
@@ -160,6 +185,10 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
     },
     async values(session, spreadsheetId, sheetTitle) {
       const id = safeId(spreadsheetId), range = `${safeSheetTitle(sheetTitle)}!A:K`;
+      if (bridgeUrl && bridgeSecret) {
+        const data = await bridgeRequest('values', { spreadsheetId: id, sheetTitle });
+        return (data.values || []).map(row => Array.from({ length: 11 }, (_, index) => row[index] == null ? '' : String(row[index])));
+      }
       const url = new URL(`${SHEETS_API}/${encodeURIComponent(id)}/values/${encodeURIComponent(range)}`);
       url.searchParams.set('majorDimension', 'ROWS');
       url.searchParams.set('valueRenderOption', 'FORMATTED_VALUE');
@@ -168,6 +197,7 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
     },
     async formats(session, spreadsheetId, sheetId, sheetTitle, startRowIndex, endRowIndex) {
       const id = safeId(spreadsheetId), range = `${safeSheetTitle(sheetTitle)}!A${startRowIndex + 1}:K${endRowIndex}`;
+      if (bridgeUrl && bridgeSecret) return bridgeRequest('formats', { spreadsheetId: id, sheetId, sheetTitle, startRowIndex, endRowIndex });
       const url = new URL(`${SHEETS_API}/${encodeURIComponent(id)}`);
       url.searchParams.set('includeGridData', 'true');
       url.searchParams.set('ranges', range);
@@ -176,6 +206,7 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
       return (data.sheets?.[0]?.data?.[0]?.rowData || []).map(row => Array.from({ length: 11 }, (_, index) => row.values?.[index]?.userEnteredFormat || {}));
     },
     async batchUpdate(session, spreadsheetId, requests) {
+      if (bridgeUrl && bridgeSecret) return bridgeRequest('batchUpdate', { spreadsheetId: safeId(spreadsheetId), requests });
       const url = `${SHEETS_API}/${encodeURIComponent(safeId(spreadsheetId))}:batchUpdate`;
       return request(session, url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests }) });
     }

@@ -4,23 +4,26 @@ The first adapter is deliberately limited to VK Ads. Yandex RTB, Yandex Maps,
 and Urban Ads are listed as planned sources; their rows are reported as skipped
 and are never rewritten using VK rules.
 
-## Google Sheets access
+## Google Sheets access without Google Cloud
 
-The recommended setup uses an app-level Google service account. Staff do not
-need to sign in to Google individually. Create a service account in Google Cloud,
-enable Google Sheets API, create a JSON key, then install its email and private
-key in the server environment (never commit or paste the private key into chat):
+The recommended setup uses a Google Apps Script web app, so no Cloud Console
+project, service-account key, or staff Google sign-in is needed. Sign in to the
+Google account that owns or can edit the target sheet, then:
 
-```
-AGM_GOOGLE_SERVICE_ACCOUNT_EMAIL=...@....iam.gserviceaccount.com
-AGM_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n
-```
+1. Open `script.google.com`, create a project, and paste `public/smartis-bridge.gs`.
+2. In the app's administrator panel, generate a 64-character key. Replace the
+   `SHARED_SECRET` placeholder in the script with that key.
+3. In the Apps Script project, select **Deploy → New deployment → Web app**.
+   Choose **Execute as me** and, where company policy allows, **Anyone** (or
+   **Anyone, including anonymous**). Authorize the requested spreadsheet scope.
+4. Paste the deployed `/exec` URL and the same key into the administrator form.
 
-Share the destination spreadsheet with the service-account email as an Editor.
-Do not make the spreadsheet editable by anyone with the link. Restart the app
-after changing the systemd environment. The service-account key stays only in
-the server environment; access tokens are held in process memory and refreshed
-automatically.
+The app stores the shared key in a mode-0600 file under its private runtime data
+directory. The web app only accepts requests with that key and is hard-limited
+to the configured LSR spreadsheet ID. The script owner must have edit access to
+the sheet; do not make the sheet public. Google Workspace administrators can
+disable anonymous Apps Script web apps, in which case use the OAuth fallback or
+ask the Workspace administrator to allow the deployment.
 
 An optional per-user OAuth fallback is still supported. Configure a Google
 Cloud OAuth client of type **Web application**, enable Google Sheets API, and

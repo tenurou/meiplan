@@ -38,3 +38,27 @@ test('service-account access signs a token and reuses it for Sheets API calls', 
     globalThis.fetch = previousFetch;
   }
 });
+
+test('Apps Script bridge validates its endpoint and keeps the shared key server-side', async () => {
+  const service = createGoogleSheetsService();
+  const secret = 'a'.repeat(64);
+  assert.throws(() => service.configureAppsScript('https://example.com/exec', secret), /Apps Script/);
+  service.configureAppsScript('https://script.google.com/macros/s/test_deployment_123/exec', secret);
+  const previousFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://script.google.com/macros/s/test_deployment_123/exec');
+    requestBody = JSON.parse(options.body);
+    return Response.json({ spreadsheetId: '12345678901234567890', properties: { title: 'Test' }, sheets: [] });
+  };
+  try {
+    assert.equal(service.authMode, 'apps_script');
+    assert.equal(service.configured, true);
+    const metadata = await service.metadata({}, '12345678901234567890');
+    assert.equal(metadata.properties.title, 'Test');
+    assert.equal(requestBody.secret, secret);
+    assert.equal(requestBody.action, 'metadata');
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

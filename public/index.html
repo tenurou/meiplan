@@ -100,9 +100,14 @@
         <span id="smartis-connection" class="status-chip muted">GOOGLE НЕ ПОДКЛЮЧЁН</span>
       </section>
       <section class="card smartis-card">
-        <div class="step-head"><span class="step-number">01</span><div><h2>Подключение Google Sheets</h2><p>Для импорта используется сервисный аккаунт приложения</p></div></div>
+        <div class="step-head"><span class="step-number">01</span><div><h2>Подключение Google Sheets</h2><p>Работа через Apps Script — личный Google-вход и Google Cloud не нужны</p></div></div>
         <div class="smartis-controls"><button id="smartis-google-connect" class="button primary" type="button" hidden>Подключить Google</button><button id="smartis-google-disconnect" class="button ghost" type="button" hidden>Отключить</button><small id="smartis-google-message" role="status">Проверяю подключение таблиц…</small></div>
-        <p id="smartis-google-setup" class="filter-note" hidden>Настрой сервисный аккаунт Google на сервере и дай ему роль редактора таблицы. Адрес сервисного аккаунта появится здесь; личный Google-вход сотрудникам не нужен.</p>
+        <p id="smartis-google-setup" class="filter-note" hidden>Администратор: создай Apps Script из <a href="/public/smartis-bridge.gs" download>шаблона</a>, вставь его ключ и опубликуй как веб-приложение от своего имени. Затем внеси URL и этот же ключ ниже. Таблицу открывать всем по ссылке не нужно.</p>
+        <form id="smartis-apps-script-admin" class="feedback-form" hidden>
+          <label>URL опубликованного Apps Script<input name="url" type="url" placeholder="https://script.google.com/macros/s/…/exec" required></label>
+          <label>Общий ключ для Apps Script<input name="secret" type="password" autocomplete="new-password" minlength="32" maxlength="512" placeholder="Не менее 32 случайных символов" required></label>
+          <div class="feedback-submit"><small id="smartis-apps-script-status" role="status">Ключ сохраняется только на сервере с закрытыми правами доступа.</small><button id="smartis-generate-secret" class="button ghost" type="button">Сгенерировать ключ</button><button class="button secondary" type="submit">Сохранить и подключить</button></div>
+        </form>
       </section>
       <section class="card smartis-card">
         <div class="step-head"><span class="step-number">02</span><div><h2>Выгрузка Smartis</h2><p>Пока поддерживается источник VK. Остальные источники будут отмечены и пропущены.</p></div></div>
