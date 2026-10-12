@@ -619,14 +619,8 @@ async function refreshState(){
   try {
     const s=await api('/api/state'); setConnection(s.connected,s.pages);
     if (s.smartis) {
-      const serviceAccountMode = s.smartis.googleAuthMode === 'service_account';
-      const appsScriptMode = s.smartis.googleAuthMode === 'apps_script';
-      const publicCsvMode = s.smartis.publicCsvAvailable && !s.smartis.googleConnected;
       $('smartis-append-row').hidden = !s.smartis.googleWritable;
       $('smartis-append').hidden = !s.smartis.googleWritable;
-      $('smartis-connection').textContent = publicCsvMode ? 'ТОЛЬКО ЧТЕНИЕ ПО ССЫЛКЕ' : s.smartis.googleConnected ? appsScriptMode ? 'APPS SCRIPT ПОДКЛЮЧЁН' : serviceAccountMode ? 'СЕРВИСНЫЙ АККАУНТ' : 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
-      $('smartis-connection').className = `status-chip ${publicCsvMode||s.smartis.googleConnected?'ok':s.smartis.googleConfigured?'muted':'warn'}`;
-      $('smartis-google-message').textContent = publicCsvMode ? 'Лист Лиды Смартис будет прочитан по общей ссылке. Автозаписи нет — приложение подготовит TSV для копирования.' : s.smartis.googleError || (appsScriptMode ? 'Таблица доступна приложению через Apps Script. Отдельный Google-вход сотрудникам не нужен.' : serviceAccountMode ? `Подключён сервисный аккаунт${s.smartis.serviceAccountEmail ? ` ${s.smartis.serviceAccountEmail}` : ''}; личный вход Google не нужен.` : s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : 'Открой доступ для просмотра по ссылке к листу Лиды Смартис.');
       if (!s.smartis.googleReadable && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; $('smartis-copy').disabled = true; $('smartis-paste-output').value=''; }
     }
     $('admin-feedback').hidden = !s.isAdmin;
