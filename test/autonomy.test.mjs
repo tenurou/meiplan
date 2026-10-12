@@ -568,10 +568,19 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
   assert.equal(stalePrepared.changes.length, factChanges.length);
   const mutateSource = await fetch(`${base}/api/browser-action`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage, action: 'click', x: 80, y: 20 }) });
   assert.equal(mutateSource.status, 200, mutateSource.status === 200 ? '' : await mutateSource.text());
-  const mutatedCapture = await fetch(`${base}/api/capture`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage }) });
-  const mutatedCaptureText = await mutatedCapture.text();
-  assert.equal(mutatedCapture.status, 200, mutatedCaptureText);
-  assert.equal(JSON.parse(mutatedCaptureText).candidates.find(candidate=>candidate.id===captured.selectedId)?.rows[1][1], '120001', 'the fixture click must alter the embedded DataLens source');
+  // The fixture uses cross-frame postMessage: mouse dispatch can complete before
+  // the iframe handles the message, especially on a fast headless Linux runner.
+  let mutatedValue;
+  const mutationDeadline = Date.now() + 5000;
+  do {
+    const mutatedCapture = await fetch(`${base}/api/capture`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage }) });
+    const mutatedCaptureText = await mutatedCapture.text();
+    assert.equal(mutatedCapture.status, 200, mutatedCaptureText);
+    mutatedValue = JSON.parse(mutatedCaptureText).candidates.find(candidate=>candidate.id===captured.selectedId)?.rows[1][1];
+    if (mutatedValue === '120001') break;
+    await delay(100);
+  } while (Date.now() < mutationDeadline);
+  assert.equal(mutatedValue, '120001', 'the fixture click must alter the embedded DataLens source');
   const staleApply = await fetch(`${base}/api/apply`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ id: stalePrepared.id }) });
   assert.equal(staleApply.status, 400);
   assert.match((await staleApply.json()).error, /DataLens изменился после предпросмотра/i);
