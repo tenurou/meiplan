@@ -100,14 +100,9 @@
         <span id="smartis-connection" class="status-chip muted">GOOGLE НЕ ПОДКЛЮЧЁН</span>
       </section>
       <section class="card smartis-card">
-        <div class="step-head"><span class="step-number">01</span><div><h2>Подключение Google Sheets</h2><p>Работа через Apps Script — личный Google-вход и Google Cloud не нужны</p></div></div>
-        <div class="smartis-controls"><button id="smartis-google-connect" class="button primary" type="button" hidden>Подключить Google</button><button id="smartis-google-disconnect" class="button ghost" type="button" hidden>Отключить</button><small id="smartis-google-message" role="status">Проверяю подключение таблиц…</small></div>
-        <p id="smartis-google-setup" class="filter-note" hidden>Администратор: войди в панель ниже, нажми «Сгенерировать ключ», создай Apps Script из <a href="/public/smartis-bridge.gs" download>шаблона</a> и вставь ключ вместо SHARED_SECRET. Опубликуй как веб-приложение от своего имени, затем внеси URL и тот же ключ ниже. Таблицу открывать всем по ссылке не нужно.</p>
-        <form id="smartis-apps-script-admin" class="feedback-form" hidden>
-          <label>URL опубликованного Apps Script<input name="url" type="url" placeholder="https://script.google.com/macros/s/…/exec" required></label>
-          <label>Общий ключ для Apps Script<input name="secret" type="password" autocomplete="new-password" minlength="32" maxlength="512" placeholder="Не менее 32 случайных символов" required></label>
-          <div class="feedback-submit"><small id="smartis-apps-script-status" role="status">Ключ сохраняется только на сервере с закрытыми правами доступа.</small><button id="smartis-generate-secret" class="button ghost" type="button">Сгенерировать ключ</button><button class="button secondary" type="submit">Сохранить и подключить</button></div>
-        </form>
+        <div class="step-head"><span class="step-number">01</span><div><h2>Доступ к таблице</h2><p>Чтение по ссылке; подготовленные строки вставляются вручную</p></div></div>
+        <div class="smartis-controls"><small id="smartis-google-message" role="status">Проверяю, доступна ли таблица для чтения…</small></div>
+        <p id="smartis-google-setup" class="filter-note">Для сверки нужен доступ «Все, у кого есть ссылка — просмотр». Приложение читает Person ID и не меняет таблицу. После проверки скопируй готовые строки из нижнего блока и вставь в первую пустую строку колонки A.</p>
       </section>
       <section class="card smartis-card">
         <div class="step-head"><span class="step-number">02</span><div><h2>Выгрузка Smartis</h2><p>Пока поддерживается источник VK. Остальные источники будут отмечены и пропущены.</p></div></div>
@@ -123,10 +118,16 @@
       </section>
       <section class="card smartis-card">
         <div class="audit-head"><div><div class="eyebrow">ПРЕДПРОСМОТР И СВЕРКА</div><h2>Новые строки и пропуски</h2></div><span id="smartis-audit-status" class="status-chip muted">ЖДЁТ ДАННЫЕ</span></div>
-        <div id="smartis-results" class="audit-results"><div class="empty-state"><strong>Подключи Google и загрузи XLSX</strong><small>До твоего подтверждения таблица не изменяется.</small></div></div>
+        <div id="smartis-results" class="audit-results"><div class="empty-state"><strong>Загрузи XLSX, проверь лист и нажми «Сверить»</strong><small>Приложение не меняет таблицу автоматически.</small></div></div>
         <div class="smartis-append-row"><small id="smartis-append-status" role="status">Импорт будет добавлять только отсутствующие ID.</small><button id="smartis-append" class="button primary" type="button" disabled>Добавить отсутствующих</button></div>
       </section>
-      <section class="card smartis-card"><div class="audit-head"><div><div class="eyebrow">ЖУРНАЛ</div><h2>Последние импорты</h2></div><button id="smartis-history-refresh" class="button ghost" type="button">Обновить</button></div><div id="smartis-history" class="audit-results"><div class="empty-state"><strong>Подключи Google, чтобы загрузить журнал</strong></div></div></section>
+      <section class="card smartis-card smartis-copy-card">
+        <div class="audit-head"><div><div class="eyebrow">ГОТОВО ДЛЯ GOOGLE SHEETS</div><h2>Скопируй новые строки</h2><small id="smartis-copy-info">После сверки здесь появятся строки A:K без заголовков.</small></div><button id="smartis-copy" class="button secondary" type="button" disabled>Скопировать строки</button></div>
+        <label class="smartis-copy-label" for="smartis-paste-output">Скопируй и вставь в первую пустую строку столбца A</label>
+        <textarea id="smartis-paste-output" class="smartis-paste-output" rows="8" readonly spellcheck="false" placeholder="Сначала загрузи Excel и нажми «Сверить»"></textarea>
+        <small id="smartis-copy-status" class="preview-note" role="status">В буфер попадут только отсутствующие Person ID и ровно 11 колонок A:K.</small>
+      </section>
+      <section class="card smartis-card"><div class="audit-head"><div><div class="eyebrow">ЖУРНАЛ</div><h2>Последние импорты</h2></div><button id="smartis-history-refresh" class="button ghost" type="button">Обновить</button></div><div id="smartis-history" class="audit-results"><div class="empty-state"><strong>Импортов пока нет</strong></div></div></section>
     </section>
     <footer><span>Авто-МП</span><span>Браузерные профили и загруженные книги разделены по сессиям браузера</span></footer>
   </main>

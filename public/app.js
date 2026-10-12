@@ -556,8 +556,9 @@ function planPeriodForReport(){
 }
 function smartisRenderPreview(result) {
   const { source, reconciliation } = result;
-  $('smartis-audit-status').textContent = result.writeAvailable ? 'ГОТОВО К ПРОВЕРКЕ' : 'НЕТ НОВЫХ СТРОК';
-  $('smartis-audit-status').className = `status-chip ${result.writeAvailable?'warn':'ok'}`;
+  const hasNewRows = reconciliation.additionCount > 0;
+  $('smartis-audit-status').textContent = hasNewRows ? result.writeAvailable ? 'ГОТОВО К ВНЕСЕНИЮ' : 'ГОТОВО К КОПИРОВАНИЮ' : 'НЕТ НОВЫХ СТРОК';
+  $('smartis-audit-status').className = `status-chip ${hasNewRows?'warn':'ok'}`;
   const notes = [
     `<li class="${source.missingPersonIdRows?'warn':'pass'}">Выгрузка: ${source.sourceRows} непустых строк; без Person ID: ${source.missingPersonIdRows}; готово к импорту: ${source.importable}.</li>`,
     `<li class="${reconciliation.additionCount?'warn':'pass'}">Новых лидов: ${reconciliation.additionCount}; уже в таблице: ${reconciliation.alreadyPresentCount}; следующая строка: ${reconciliation.nextRowNumber}.</li>`
@@ -570,23 +571,21 @@ function smartisRenderPreview(result) {
   if (source.warningCount) notes.push(`<li class="warn">Поля требуют ручного внимания: ${source.warningCount}; первые 100 предупреждений в таблице ниже.</li>`);
   let body = `<ul class="alert-list">${notes.join('')}</ul>`;
   if (reconciliation.additions.length) {
-    body += `<div class="table-wrap"><table class="mini-table"><thead><tr><th>Person ID</th><th>Тип</th><th>Дата</th><th>Контакт</th><th>Площадка</th><th>Кампания</th><th>Вид помещения</th><th>Объект</th><th>Причина отказа</th><th>post_view</th><th>Предупреждения</th></tr></thead><tbody>${reconciliation.additions.map(row=>`<tr><td>${esc(row.personId)}</td><td>${esc(row.leadType)}</td><td>${esc(row.createdAt)}</td><td>${esc(row.contact)}</td><td>${esc(row.platform)}</td><td>${esc(row.campaign)}</td><td>${esc(row.propertyType)}</td><td>${esc(row.property)}</td><td>${esc(row.rejectionReason)}</td><td>${esc(row.postView)}</td><td>${esc(row.warnings.join(' '))}</td></tr>`).join('')}</tbody></table></div>`;
+    body += `<div class="table-wrap"><table class="mini-table"><thead><tr><th>A · Person ID</th><th>B · Тип</th><th>C · Дата</th><th>D · Контакт</th><th>E · Канал</th><th>F · Площадка</th><th>G · Кампания</th><th>H · Вид помещения</th><th>I · Объект</th><th>J · Причина отказа</th><th>K · post_view</th></tr></thead><tbody>${reconciliation.additions.map(row=>`<tr><td>${esc(row.personId)}</td><td>${esc(row.leadType)}</td><td>${esc(row.createdAt)}</td><td>${esc(row.contact)}</td><td>${esc(row.channel)}</td><td>${esc(row.platform)}</td><td>${esc(row.campaign)}</td><td>${esc(row.propertyType)}</td><td>${esc(row.property)}</td><td>${esc(row.rejectionReason)}</td><td>${esc(row.postView)}</td></tr>`).join('')}</tbody></table></div>`;
   } else body += '<div class="empty-state"><strong>Добавлять нечего</strong><small>Новых ID нет; существующие строки оставлены без изменений.</small></div>';
-  if (reconciliation.additionCount > reconciliation.additions.length) body += `<small class="preview-note">Показаны первые ${reconciliation.additions.length} из ${reconciliation.additionCount} новых строк. При подтверждении добавятся все новые строки.</small>`;
+  if (reconciliation.additionCount > reconciliation.additions.length) body += `<small class="preview-note">В предпросмотре показаны первые ${reconciliation.additions.length} из ${reconciliation.additionCount} строк. Нижнее окно копирует весь набор.</small>`;
   if (source.ignoredCount) body += `<h3 class="smartis-subhead">Пропущенные строки</h3><div class="table-wrap"><table class="mini-table"><thead><tr><th>Excel row</th><th>Person ID</th><th>Source</th><th>Почему пропущена</th></tr></thead><tbody>${source.ignored.map(row=>`<tr><td>${esc(row.sourceRow)}</td><td>${esc(row.personId)}</td><td>${esc(row.source)}</td><td>${esc(row.reason)}</td></tr>`).join('')}</tbody></table>${source.ignoredCount>source.ignored.length?`<small class="preview-note">Показаны первые ${source.ignored.length} из ${source.ignoredCount} пропущенных строк.</small>`:''}</div>`;
   if (source.warningCount) body += `<h3 class="smartis-subhead">Предупреждения полей</h3><div class="table-wrap"><table class="mini-table"><thead><tr><th>Excel row</th><th>Person ID</th><th>Предупреждение</th></tr></thead><tbody>${source.warnings.map(row=>`<tr><td>${esc(row.sourceRow)}</td><td>${esc(row.personId)}</td><td>${esc(row.warning)}</td></tr>`).join('')}</tbody></table></div>`;
   $('smartis-results').innerHTML = body;
+  $('smartis-append-row').hidden = !result.writeAvailable;
   $('smartis-append').disabled = !result.writeAvailable || !result.previewId;
+  $('smartis-append').hidden = !result.writeAvailable;
   $('smartis-append').textContent = `Добавить ${reconciliation.additionCount} отсутствующих`;
-}
-
-async function smartisOpenGoogle() {
-  try {
-    if (!browserPages.length) { const connected = await api('/api/connect',{method:'POST',body:'{}'}); activeBrowserPage=connected.activePage;setConnection(true,connected.pages); }
-    const {url} = await api('/api/smartis/google/start',{method:'POST',body:'{}'});
-    const opened = await api('/api/browser-open',{method:'POST',body:JSON.stringify({url,pageIndex:activeBrowserPage})});
-    activeBrowserPage=opened.activePage;setConnection(true,opened.pages);refreshBrowserSnapshot();toast('Заверши вход Google во встроенном браузере, затем вернись сюда.');
-  } catch (error) { toast(error.message); }
+  $('smartis-paste-output').value = result.pasteTsv || '';
+  $('smartis-copy').disabled = !result.copyAvailable;
+  $('smartis-copy').textContent = `Скопировать ${reconciliation.additionCount} строк`;
+  $('smartis-copy-info').textContent = result.copyAvailable ? `${reconciliation.additionCount} строк · 11 колонок A:K · заголовки не включены` : 'Новых строк для копирования нет.';
+  $('smartis-copy-status').textContent = result.copyAvailable ? `Сверка завершена ${new Date(result.targetReadAt).toLocaleString('ru-RU')}. Данные в Google не изменены.` : 'После сверки здесь появятся только отсутствующие Person ID.';
 }
 
 async function smartisLoadTarget() {
@@ -596,7 +595,7 @@ async function smartisLoadTarget() {
     $('smartis-target-sheet').disabled=!info.sheets.length;
     $('smartis-prepare').disabled=!info.sheets.length||!smartisWorkbook;
     $('smartis-target-info').textContent=`${info.title} · ${info.spreadsheetId}`;
-    toast('Google-таблица и листы прочитаны. Данные пока не менялись.');
+    toast('Лист прочитан для сверки. Данные в Google не менялись.');
   } catch(error) { toast(error.message); }
 }
 
@@ -606,7 +605,7 @@ async function smartisPrepare() {
   $('smartis-prepare').disabled=true;$('smartis-audit-status').textContent='СВЕРЯЮ…';
   try {
     const result=await api('/api/smartis/preview',{method:'POST',body:JSON.stringify({sourceSheet:sheetName,manualSource:$('smartis-source-mode').value,spreadsheetId:smartisTarget.spreadsheetId,sheetId:targetSheet.sheetId})});
-    smartisPreview=result;smartisRenderPreview(result);if(result.writeAvailable)toast('Предпросмотр готов. Таблица ещё не изменена.');
+    smartisPreview=result;smartisRenderPreview(result);if(result.copyAvailable)toast('Сверка готова. Скопируй строки в нижнем блоке и вставь в Google Sheets.');
   } catch(error) {$('smartis-audit-status').textContent='ОШИБКА СВЕРКИ';$('smartis-audit-status').className='status-chip bad';$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;smartisPreview=null;}
   finally {$('smartis-prepare').disabled=false;}
 }
@@ -622,21 +621,16 @@ async function refreshState(){
     if (s.smartis) {
       const serviceAccountMode = s.smartis.googleAuthMode === 'service_account';
       const appsScriptMode = s.smartis.googleAuthMode === 'apps_script';
-      $('smartis-google-connect').hidden = serviceAccountMode || appsScriptMode || !s.smartis.googleConfigured;
-      $('smartis-google-connect').disabled = !s.smartis.googleConfigured || s.smartis.googleConnected;
-      $('smartis-google-connect').textContent = s.smartis.googleConnected ? 'Google подключён' : 'Подключить Google';
-      $('smartis-google-disconnect').hidden = serviceAccountMode || appsScriptMode || !s.smartis.googleConnected;
-      $('smartis-google-setup').hidden = s.smartis.googleConfigured;
-      $('smartis-connection').textContent = s.smartis.googleConnected ? appsScriptMode ? 'APPS SCRIPT ПОДКЛЮЧЁН' : serviceAccountMode ? 'СЕРВИСНЫЙ АККАУНТ' : 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
-      $('smartis-connection').className = `status-chip ${s.smartis.googleConnected?'ok':s.smartis.googleConfigured?'muted':'warn'}`;
-      $('smartis-google-message').textContent = s.smartis.googleError || (appsScriptMode ? 'Таблица доступна приложению через Apps Script. Отдельный Google-вход сотрудникам не нужен.' : serviceAccountMode ? `Подключён сервисный аккаунт${s.smartis.serviceAccountEmail ? ` ${s.smartis.serviceAccountEmail}` : ''}; личный вход Google не нужен.` : s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : 'Подключи Apps Script через панель администратора.');
-      $('smartis-apps-script-admin').hidden = !s.isAdmin;
-      if (s.isAdmin && s.smartis.appsScriptUrl) $('smartis-apps-script-admin').elements.url.value = s.smartis.appsScriptUrl;
-      if (!s.smartis.googleConnected && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; }
+      const publicCsvMode = s.smartis.publicCsvAvailable && !s.smartis.googleConnected;
+      $('smartis-append-row').hidden = !s.smartis.googleWritable;
+      $('smartis-append').hidden = !s.smartis.googleWritable;
+      $('smartis-connection').textContent = publicCsvMode ? 'ТОЛЬКО ЧТЕНИЕ ПО ССЫЛКЕ' : s.smartis.googleConnected ? appsScriptMode ? 'APPS SCRIPT ПОДКЛЮЧЁН' : serviceAccountMode ? 'СЕРВИСНЫЙ АККАУНТ' : 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
+      $('smartis-connection').className = `status-chip ${publicCsvMode||s.smartis.googleConnected?'ok':s.smartis.googleConfigured?'muted':'warn'}`;
+      $('smartis-google-message').textContent = publicCsvMode ? 'Лист Лиды Смартис будет прочитан по общей ссылке. Автозаписи нет — приложение подготовит TSV для копирования.' : s.smartis.googleError || (appsScriptMode ? 'Таблица доступна приложению через Apps Script. Отдельный Google-вход сотрудникам не нужен.' : serviceAccountMode ? `Подключён сервисный аккаунт${s.smartis.serviceAccountEmail ? ` ${s.smartis.serviceAccountEmail}` : ''}; личный вход Google не нужен.` : s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : 'Открой доступ для просмотра по ссылке к листу Лиды Смартис.');
+      if (!s.smartis.googleReadable && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; $('smartis-copy').disabled = true; $('smartis-paste-output').value=''; }
     }
     $('admin-feedback').hidden = !s.isAdmin;
     $('admin-login-toggle').hidden = !!s.isAdmin;
-      if (!s.isAdmin && $('smartis-apps-script-admin').elements.secret.value) $('smartis-apps-script-admin').elements.secret.value = '';
     if (s.isAdmin) $('admin-login-form').hidden = true;
     if (s.isAdmin && !adminFeedbackLoaded) await loadAdminFeedback();
     if (s.workbook?.length && !sheets.length) {
@@ -747,7 +741,7 @@ $('admin-feedback-list').addEventListener('click',async event=>{
   finally{button.disabled=false;}
 });
 $('admin-logout').addEventListener('click',async()=>{
-  try{await api('/api/admin/logout',{method:'POST',body:'{}'});adminFeedbackLoaded=false;$('admin-feedback').hidden=true;$('admin-login-toggle').hidden=false;$('admin-login-form').hidden=true;$('smartis-apps-script-admin').elements.secret.value='';}
+  try{await api('/api/admin/logout',{method:'POST',body:'{}'});adminFeedbackLoaded=false;$('admin-feedback').hidden=true;$('admin-login-toggle').hidden=false;$('admin-login-form').hidden=true;}
   catch(error){toast(error.message);}
 });
 ['exact-leads','thousand-impressions','skip-excluded'].forEach(id=>$(id).addEventListener('change',runAudit));
@@ -759,30 +753,9 @@ document.querySelectorAll('.app-tab').forEach(button=>button.addEventListener('c
   $('smartis-view').hidden=button.dataset.view!=='smartis-view';
   if(button.dataset.view==='smartis-view')smartisRefreshHistory();
 }));
-$('smartis-google-connect').addEventListener('click',smartisOpenGoogle);
-$('smartis-generate-secret').addEventListener('click',async()=>{
-  const bytes=crypto.getRandomValues(new Uint8Array(32));
-  const secret=Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
-  const form=$('smartis-apps-script-admin');form.elements.secret.value=secret;
-  try{await navigator.clipboard.writeText(secret);$('smartis-apps-script-status').textContent='Ключ создан и скопирован. Вставь его также в строку SHARED_SECRET шаблона Apps Script.';}
-  catch{$('smartis-apps-script-status').textContent='Ключ создан. Скопируй его и вставь в строку SHARED_SECRET шаблона Apps Script.';}
-});
-$('smartis-apps-script-admin').addEventListener('submit',async event=>{
-  event.preventDefault();
-  const form=event.currentTarget,button=form.querySelector('button[type="submit"]'),status=$('smartis-apps-script-status');
-  button.disabled=true;status.textContent='Сохраняю закрытые настройки и подключаю таблицу…';
-  try{
-    const result=await api('/api/admin/smartis-apps-script',{method:'POST',body:JSON.stringify({url:form.elements.url.value.trim(),secret:form.elements.secret.value})});
-    form.elements.secret.value='';status.textContent='Настройки сохранены на сервере. Проверь таблицу кнопкой «Проверить таблицу».';await refreshState();
-  }catch(error){status.textContent=error.message;}
-  finally{button.disabled=false;}
-});
-$('smartis-google-disconnect').addEventListener('click',async()=>{
-  try{await api('/api/smartis/google/disconnect',{method:'POST',body:'{}'});smartisPreview=null;$('smartis-append').disabled=true;await refreshState();$('smartis-google-message').textContent='Google отключён в этой сессии.';}
-  catch(error){toast(error.message);}
-});
 $('smartis-file').addEventListener('change',async event=>{
   const file=event.target.files?.[0];if(!file)return;
+  $('smartis-paste-output').value='';$('smartis-copy').disabled=true;$('smartis-copy-info').textContent='После сверки здесь появятся строки A:K без заголовков.';$('smartis-copy-status').textContent='Сначала загрузи Excel и нажми «Сверить».';
   $('smartis-file-name').textContent=file.name;$('smartis-results').innerHTML='<div class="empty-state"><strong>Читаю XLSX…</strong></div>';
   try{
     const result=await api('/api/smartis/workbook',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name)},body:await file.arrayBuffer()});
@@ -792,9 +765,15 @@ $('smartis-file').addEventListener('change',async event=>{
 });
 $('smartis-load-target').addEventListener('click',smartisLoadTarget);
 $('smartis-prepare').addEventListener('click',smartisPrepare);
-$('smartis-target-sheet').addEventListener('change',()=>{$('smartis-prepare').disabled=!smartisWorkbook;smartisPreview=null;$('smartis-append').disabled=true;});
-$('smartis-sheet').addEventListener('change',()=>{smartisPreview=null;$('smartis-append').disabled=true;});
-$('smartis-spreadsheet').addEventListener('input',()=>{smartisTarget=null;smartisPreview=null;$('smartis-target-sheet').disabled=true;$('smartis-prepare').disabled=true;$('smartis-append').disabled=true;$('smartis-target-info').textContent='Проверь новую ссылку перед чтением.';});
+$('smartis-target-sheet').addEventListener('change',()=>{$('smartis-prepare').disabled=!smartisWorkbook;smartisPreview=null;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';});
+$('smartis-sheet').addEventListener('change',()=>{smartisPreview=null;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';});
+$('smartis-spreadsheet').addEventListener('input',()=>{smartisTarget=null;smartisPreview=null;$('smartis-target-sheet').disabled=true;$('smartis-prepare').disabled=true;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';$('smartis-target-info').textContent='Проверь новую ссылку перед чтением.';});
+$('smartis-copy').addEventListener('click',async()=>{
+  const output=$('smartis-paste-output'),text=output.value;
+  if(!text)return;
+  try{await navigator.clipboard.writeText(text);$('smartis-copy-status').textContent=`Скопировано ${smartisPreview?.reconciliation?.additionCount||0} строк. Вставь через Ctrl+V в первую пустую строку столбца A.`;}
+  catch{output.focus();output.select();const copied=document.execCommand('copy');$('smartis-copy-status').textContent=copied?`Скопировано ${smartisPreview?.reconciliation?.additionCount||0} строк. Вставь через Ctrl+V в первую пустую строку столбца A.`:'Не удалось получить доступ к буферу. Выдели текст в окне и скопируй Ctrl+C.';}
+});
 $('smartis-append').addEventListener('click',async()=>{
   if(!smartisPreview?.previewId)return;
   const count=smartisPreview.reconciliation.additionCount;

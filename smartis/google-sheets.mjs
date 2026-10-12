@@ -4,6 +4,28 @@ const OAUTH_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 
+export function parseCsv(text) {
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (char === '"') quoted = false;
+      else cell += char;
+    } else if (char === '"' && cell === '') quoted = true;
+    else if (char === ',') { row.push(cell); cell = ''; }
+    else if (char === '\n' || char === '\r') {
+      if (char === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some(value => value !== '') || rows.length) rows.push(row);
+      row = [];
+    } else cell += char;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
 function safeId(value) {
   const match = String(value || '').match(/^https:\/\/docs\.google\.com\/spreadsheets\/d\/([A-Za-z0-9_-]{20,})/);
   if (match) return match[1];
@@ -15,7 +37,7 @@ function safeSheetTitle(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-export function createGoogleSheetsService({ clientId = '', clientSecret = '', publicOrigin = '', serviceAccountEmail = '', serviceAccountPrivateKey = '' } = {}) {
+export function createGoogleSheetsService({ clientId = '', clientSecret = '', publicOrigin = '', serviceAccountEmail = '', serviceAccountPrivateKey = '', publicTarget = null } = {}) {
   const userOAuthConfigured = Boolean(clientId && clientSecret && /^https:\/\//i.test(publicOrigin));
   const privateKey = String(serviceAccountPrivateKey || '').replace(/\\n/g, '\n');
   const serviceAccountConfigured = Boolean(serviceAccountEmail && privateKey.includes('PRIVATE KEY'));
@@ -28,6 +50,23 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   let serviceToken = null;
   let serviceTokenExpiresAt = 0;
   let serviceTokenPromise = null;
+
+  async function publicValues(spreadsheetId, sheetId, sheetTitle) {
+    if (!publicTarget || spreadsheetId !== publicTarget.spreadsheetId || Number(sheetId) !== Number(publicTarget.sheetId) || sheetTitle !== publicTarget.sheetTitle) {
+      throw new Error('По публичной ссылке разрешено читать только лист «Лиды Смартис» стандартной таблицы.');
+    }
+    const url = new URL(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export`);
+    url.searchParams.set('format', 'csv');
+    url.searchParams.set('gid', String(sheetId));
+    const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 MeiPlan/1.0' }, signal: AbortSignal.timeout(25_000), redirect: 'follow' });
+    if (!response.ok) throw new Error(`Таблица недоступна по ссылке (HTTP ${response.status}). Проверь, что просмотр открыт по ссылке.`);
+    if (!/text\/csv/i.test(response.headers.get('content-type') || '')) throw new Error('Google не отдал таблицу как CSV. Проверь доступ «Все, у кого есть ссылка — просмотр».');
+    const csv = await response.text();
+    if (csv.length > 25 * 1024 * 1024) throw new Error('Таблица слишком велика для безопасной проверки по ссылке.');
+    const rows = parseCsv(csv).map(row => Array.from({ length: 11 }, (_, index) => row[index] ?? ''));
+    if (!rows.length || !/person.?id|смарт.?ис/i.test(rows[0][0] || '')) throw new Error('Скачанный CSV не похож на лист «Лиды Смартис»: заголовок Person ID не найден.');
+    return rows;
+  }
 
   async function getServiceAccountToken() {
     if (!serviceAccountConfigured) throw new Error('Сервисный аккаунт Google ещё не настроен администратором приложения.');
@@ -165,6 +204,7 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   return {
     get configured() { return Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || userOAuthConfigured); },
     get authMode() { return bridgeUrl && bridgeSecret ? 'apps_script' : authMode; },
+    get publicCsvAvailable() { return Boolean(publicTarget?.spreadsheetId && publicTarget?.sheetId && publicTarget?.sheetTitle); },
     serviceAccountEmail,
     get appsScriptUrl() { return bridgeUrl; },
     configureAppsScript,
@@ -174,10 +214,16 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
     setCallbackError,
     disconnect,
     hasSession: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken),
+    hasReadAccess: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken || (publicTarget?.spreadsheetId && publicTarget?.sheetId && publicTarget?.sheetTitle)),
+    hasWriteAccess: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken),
     spreadsheetId: safeId,
     async metadata(session, value) {
       const id = safeId(value);
       if (bridgeUrl && bridgeSecret) return bridgeRequest('metadata', { spreadsheetId: id });
+      if (!hasCredentials(session) && publicTarget?.spreadsheetId === id) {
+        const rows = await publicValues(id, publicTarget.sheetId, publicTarget.sheetTitle);
+        return { spreadsheetId: id, title: 'Копия ЛСР // Накопительный отчет // 2025', sheets: [{ sheetId: publicTarget.sheetId, title: publicTarget.sheetTitle, index: 0, rowCount: rows.length, columnCount: 11 }] };
+      }
       const url = new URL(`${SHEETS_API}/${encodeURIComponent(id)}`);
       url.searchParams.set('fields', 'spreadsheetId,properties(title),sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))');
       const data = await request(session, url);
@@ -189,6 +235,7 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
         const data = await bridgeRequest('values', { spreadsheetId: id, sheetTitle });
         return (data.values || []).map(row => Array.from({ length: 11 }, (_, index) => row[index] == null ? '' : String(row[index])));
       }
+      if (!hasCredentials(session) && publicTarget?.spreadsheetId === id) return publicValues(id, publicTarget.sheetId, sheetTitle);
       const url = new URL(`${SHEETS_API}/${encodeURIComponent(id)}/values/${encodeURIComponent(range)}`);
       url.searchParams.set('majorDimension', 'ROWS');
       url.searchParams.set('valueRenderOption', 'FORMATTED_VALUE');
@@ -206,9 +253,12 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
       return (data.sheets?.[0]?.data?.[0]?.rowData || []).map(row => Array.from({ length: 11 }, (_, index) => row.values?.[index]?.userEnteredFormat || {}));
     },
     async batchUpdate(session, spreadsheetId, requests) {
+      if (!hasCredentials(session) && !bridgeUrl) throw new Error('Таблица открыта только для чтения. Скопируй подготовленные строки и вставь их в Google Sheets вручную.');
       if (bridgeUrl && bridgeSecret) return bridgeRequest('batchUpdate', { spreadsheetId: safeId(spreadsheetId), requests });
       const url = `${SHEETS_API}/${encodeURIComponent(safeId(spreadsheetId))}:batchUpdate`;
       return request(session, url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests }) });
     }
   };
+
+  function hasCredentials(session) { return Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken); }
 }

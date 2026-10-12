@@ -42,7 +42,7 @@ if (fs.existsSync(smartisBridgePath)) {
     if (typeof stored.url === 'string' && typeof stored.secret === 'string') smartisBridgeSettings = stored;
   } catch { console.warn('Saved Smartis Apps Script settings could not be loaded.'); }
 }
-const googleSheets = createGoogleSheetsService({ clientId: process.env.AGM_GOOGLE_CLIENT_ID || '', clientSecret: process.env.AGM_GOOGLE_CLIENT_SECRET || '', publicOrigin, serviceAccountEmail: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_EMAIL || '', serviceAccountPrivateKey: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '' });
+const googleSheets = createGoogleSheetsService({ clientId: process.env.AGM_GOOGLE_CLIENT_ID || '', clientSecret: process.env.AGM_GOOGLE_CLIENT_SECRET || '', publicOrigin, serviceAccountEmail: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_EMAIL || '', serviceAccountPrivateKey: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '', publicTarget: SMARTIS_CONFIG.target });
 if (smartisBridgeSettings.url && smartisBridgeSettings.secret) {
   try { googleSheets.configureAppsScript(smartisBridgeSettings.url, smartisBridgeSettings.secret); }
   catch { smartisBridgeSettings = {}; console.warn('Saved Smartis Apps Script settings are invalid.'); }
@@ -150,6 +150,9 @@ function runPython(filePath) {
   });
 }
 function smartisDigest(rows) { return crypto.createHash('sha256').update(JSON.stringify(rows)).digest('hex'); }
+function smartisClipboardTsv(leads) {
+  return rowsForTarget(leads).map(row => row.map(value => String(value ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n');
+}
 async function withSmartisSheetLock(key, action) {
   const previous = smartisSheetLocks.get(key) || Promise.resolve();
   let release;
@@ -417,7 +420,7 @@ const server = http.createServer(async (req, res) => {
   recordBrowserActivity(state, req.url);
 
   try {
-    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleAuthMode: googleSheets.authMode, appsScriptUrl: googleSheets.appsScriptUrl, serviceAccountEmail: googleSheets.serviceAccountEmail, googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
+    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleReadable: googleSheets.hasReadAccess(current()), googleWritable: googleSheets.hasWriteAccess(current()), publicCsvAvailable: googleSheets.publicCsvAvailable, googleAuthMode: googleSheets.authMode, appsScriptUrl: googleSheets.appsScriptUrl, serviceAccountEmail: googleSheets.serviceAccountEmail, googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
     if (req.method === 'POST' && req.url === '/api/admin/smartis-apps-script') {
       if (!current().adminUser || current().adminExpiresAt <= Date.now()) return send(res, 403, { error: 'Сначала войди в администраторскую панель.' });
       const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
@@ -441,7 +444,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && req.url === '/api/smartis/sheet') {
       const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
-      if (!googleSheets.hasSession(current())) throw new Error('Сначала подключи Google-аккаунт.');
+      if (!googleSheets.hasReadAccess(current())) throw new Error('Таблица недоступна для чтения по ссылке.');
       const spreadsheetId = googleSheets.spreadsheetId(body.spreadsheet || SMARTIS_CONFIG.target.spreadsheetId);
       const metadata = await googleSheets.metadata(current(), spreadsheetId);
       return send(res, 200, { spreadsheetId: metadata.spreadsheetId, title: metadata.title, sheets: metadata.sheets.map(({ sheetId, title, rowCount, columnCount }) => ({ sheetId, title, rowCount, columnCount })) });
@@ -463,7 +466,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && req.url === '/api/smartis/preview') {
       const body = JSON.parse((await readBody(req, 20000)).toString('utf8'));
-      if (!googleSheets.hasSession(current())) throw new Error('Сначала подключи Google-аккаунт.');
+      if (!googleSheets.hasReadAccess(current())) throw new Error('Таблица недоступна для чтения по ссылке.');
       const sourceSheet = current().smartisWorkbook?.sheets?.find(sheet => sheet.name === body.sourceSheet);
       if (!sourceSheet) throw new Error('Загрузи Excel Smartis и выбери лист.');
       const prepared = prepareSmartisRows(sourceSheet, { manualSource: body.manualSource === 'vk' ? 'vk' : 'auto' });
@@ -474,9 +477,11 @@ const server = http.createServer(async (req, res) => {
       const additions = reconciliation.additions;
       current().smartisPreviews.clear();
       current().smartisPreviews.set(previewId, { target, additions, sourceDigest: smartisDigest(additions.map(lead => rowsForTarget([lead])[0])), targetDigest: smartisDigest(currentTarget.rows), targetLastIndex: currentTarget.lastDataIndex, createdAt: Date.now(), fileName: current().smartisWorkbook.fileName, sourceSheet: sourceSheet.name });
-      return send(res, 200, { previewId, target, source: { fileName: current().smartisWorkbook.fileName, sheet: sourceSheet.name, sourceRows: prepared.sourceRows, importable: prepared.records.length, missingPersonIdRows: prepared.missingPersonIdRows, duplicates: prepared.duplicateIds.slice(0,100), duplicateCount: prepared.duplicateIds.length, conflicts: prepared.conflictingIds.slice(0,100), conflictCount: prepared.conflictingIds.length, ignored: prepared.ignored.slice(0,100), ignoredCount: prepared.ignored.length, warnings: prepared.warnings.slice(0,100), warningCount: prepared.warnings.length }, reconciliation: { additions: additions.slice(0,500).map(summarizeLead), additionCount: additions.length, alreadyPresentCount: reconciliation.existingIds.length, existingMismatchCount: reconciliation.existingMismatchIds.length, duplicatedTargetCount: reconciliation.duplicatedTarget.length, currentRowCount: reconciliation.currentRowCount, nextRowNumber: currentTarget.lastDataIndex + 2 }, writeAvailable: additions.length > 0 });
+      const writeAvailable = additions.length > 0 && googleSheets.hasWriteAccess(current());
+      return send(res, 200, { previewId, previewMode: writeAvailable ? 'write' : 'copy', pasteTsv: smartisClipboardTsv(additions), copyAvailable: additions.length > 0, targetReadAt: new Date().toISOString(), target, source: { fileName: current().smartisWorkbook.fileName, sheet: sourceSheet.name, sourceRows: prepared.sourceRows, importable: prepared.records.length, missingPersonIdRows: prepared.missingPersonIdRows, duplicates: prepared.duplicateIds.slice(0,100), duplicateCount: prepared.duplicateIds.length, conflicts: prepared.conflictingIds.slice(0,100), conflictCount: prepared.conflictingIds.length, ignored: prepared.ignored.slice(0,100), ignoredCount: prepared.ignored.length, warnings: prepared.warnings.slice(0,100), warningCount: prepared.warnings.length }, reconciliation: { additions: additions.slice(0,500).map(summarizeLead), additionCount: additions.length, alreadyPresentCount: reconciliation.existingIds.length, existingMismatchCount: reconciliation.existingMismatchIds.length, duplicatedTargetCount: reconciliation.duplicatedTarget.length, currentRowCount: currentTarget.rows.length, nextRowNumber: currentTarget.lastDataIndex + 2 }, writeAvailable });
     }
     if (req.method === 'POST' && req.url === '/api/smartis/append') {
+      if (!googleSheets.hasWriteAccess(current())) throw new Error('Прямой записи нет. Скопируй подготовленные строки и вставь их в Google Sheets вручную.');
       const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
       if (body.confirm !== true) throw new Error('Перед добавлением требуется явное подтверждение.');
       const preview = current().smartisPreviews.get(String(body.previewId || ''));
@@ -506,7 +511,6 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (req.method === 'GET' && req.url === '/api/smartis/history') {
-      if (!googleSheets.hasSession(current())) throw new Error('Сначала подключи Google-аккаунт.');
       const historyPath = path.join(current().userDir, 'smartis-history.jsonl');
       const entries = fs.existsSync(historyPath) ? fs.readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean).slice(-50).reverse().map(line => { try { const item = JSON.parse(line); return { at: item.at, outcome: item.outcome, spreadsheetId: item.spreadsheetId, sheetTitle: item.sheetTitle, fileName: item.fileName, sourceSheet: item.sourceSheet, count: item.count, firstRow: item.firstRow, lastRow: item.lastRow, verified: item.verified }; } catch { return null; } }).filter(Boolean) : [];
       return send(res, 200, { entries });

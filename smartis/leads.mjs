@@ -165,5 +165,5 @@ export function reconcileSmartis(source, targetRows) {
 }
 
 export function summarizeLead(lead) {
-  return { personId: lead.personId, leadType: lead.leadType, createdAt: lead.createdAt, contact: lead.contact, platform: lead.platform, campaign: lead.campaign, propertyType: lead.propertyType, property: lead.property, rejectionReason: lead.rejectionReason, postView: lead.postView, sourceRow: lead.sourceRow, warnings: lead.warnings };
+  return { personId: lead.personId, leadType: lead.leadType, createdAt: lead.createdAt, contact: lead.contact, channel: lead.channel, platform: lead.platform, campaign: lead.campaign, propertyType: lead.propertyType, property: lead.property, rejectionReason: lead.rejectionReason, postView: lead.postView, sourceRow: lead.sourceRow, warnings: lead.warnings };
 }
