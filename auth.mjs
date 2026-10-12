@@ -68,5 +68,3 @@ export function writeUsers(usersFile, records) {
   fs.renameSync(tempFile, usersFile);
   try { fs.chmodSync(usersFile, 0o600); } catch { /* Windows ACLs are managed by the account. */ }
 }
-
-\n

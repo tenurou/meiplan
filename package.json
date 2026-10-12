@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test",
+    "check": "node scripts/check-syntax.mjs",
+    "test": "node scripts/check-syntax.mjs && node --test",
+    "test:smoke": "node scripts/smoke-server.mjs",
     "test:autonomy": "node --test test/autonomy.test.mjs",
     "measure:resources": "node scripts/measure-browsers.mjs",
     "package:source": "node scripts/package-release.mjs",

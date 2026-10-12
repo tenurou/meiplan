@@ -69,5 +69,3 @@ try {
   console.error(error.message || String(error));
   process.exitCode = 1;
 }
-
-\n

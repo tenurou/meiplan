@@ -8,10 +8,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.AGM_RELEASE_OUTPUT || path.join(root, 'dist', 'agm-plan-assistant-source.tar.gz'));
 const files = [
   'README.md', 'LICENSE-ARCHITECTURE.md', 'auth.mjs', 'browser-cleanup.mjs',
+  'AGENTS.md', 'ARCHITECTURE.md', 'DEPLOYMENT.md', 'TODO.md', 'REPOSITORY-BASELINE.md', 'AUDIT.md',
   'licensing.mjs', 'package.json', 'package-lock.json', 'parse_xlsx.py',
   'reconcile.mjs', 'server.mjs', 'start.cmd', 'start.sh',
   'public', 'deploy', 'test',
-  'scripts/measure-browsers.mjs', 'scripts/package-release.mjs', 'scripts/smoke-server.mjs', 'scripts/users.mjs'
+  'scripts/check-syntax.mjs', 'scripts/measure-browsers.mjs', 'scripts/package-release.mjs', 'scripts/smoke-server.mjs', 'scripts/users.mjs'
 ];
 const forbidden = /(?:^|\/)(?:data|node_modules|\.git|\.env(?:\.|$)|browser-profile|dist)(?:\/|$)|(?:^|\/)uploaded-plan\.xlsx$/i;
 

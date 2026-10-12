@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { after, test } from 'node:test';
 import { createUserRecord, makeUserId, verifyBasicAuthorization, writeUsers } from '../auth.mjs';
-import { forceKillChromium } from '../browser-cleanup.mjs';
+import { forceKillChromium, recordBrowserActivity } from '../browser-cleanup.mjs';
 import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, verifyCoreChecks } from '../reconcile.mjs';
 import { auditIsClear, identityAlerts } from '../public/audit-status.js';
 import { relationRows } from '../public/relation-audit.js';
@@ -311,6 +311,19 @@ test('separate headless Chromium opens a fixture, reads DOM and interacts', asyn
   } finally { await context.close(); }
 });
 
+test('background polling does not reset the idle browser deadline', () => {
+  const state = { lastActivity: 1000 };
+  for (const url of ['/api/state', '/api/browser-snapshot?pageIndex=0', '/public/app.js', '/api/unknown']) {
+    recordBrowserActivity(state, url, 61 * 60 * 1000);
+  }
+  assert.equal(state.lastActivity, 1000, 'an open but unused UI must still allow idle cleanup');
+  for (const url of ['/api/connect', '/api/browser-action', '/api/read-plan', '/api/capture', '/api/apply', '/api/save']) {
+    state.lastActivity = 1000;
+    recordBrowserActivity(state, url, 5000);
+    assert.equal(state.lastActivity, 5000, `${url} must keep an active browser alive`);
+  }
+});
+
 test('stuck Chromium can be terminated by its isolated profile path', async () => {
   const profile = path.join(tempRoot, 'stuck-browser-profile');
   const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 800, height: 600 } });
@@ -555,10 +568,19 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
   assert.equal(stalePrepared.changes.length, factChanges.length);
   const mutateSource = await fetch(`${base}/api/browser-action`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage, action: 'click', x: 80, y: 20 }) });
   assert.equal(mutateSource.status, 200, mutateSource.status === 200 ? '' : await mutateSource.text());
-  const mutatedCapture = await fetch(`${base}/api/capture`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage }) });
-  const mutatedCaptureText = await mutatedCapture.text();
-  assert.equal(mutatedCapture.status, 200, mutatedCaptureText);
-  assert.equal(JSON.parse(mutatedCaptureText).candidates.find(candidate=>candidate.id===captured.selectedId)?.rows[1][1], '120001', 'the fixture click must alter the embedded DataLens source');
+  // The fixture uses cross-frame postMessage: mouse dispatch can complete before
+  // the iframe handles the message, especially on a fast headless Linux runner.
+  let mutatedValue;
+  const mutationDeadline = Date.now() + 5000;
+  do {
+    const mutatedCapture = await fetch(`${base}/api/capture`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage }) });
+    const mutatedCaptureText = await mutatedCapture.text();
+    assert.equal(mutatedCapture.status, 200, mutatedCaptureText);
+    mutatedValue = JSON.parse(mutatedCaptureText).candidates.find(candidate=>candidate.id===captured.selectedId)?.rows[1][1];
+    if (mutatedValue === '120001') break;
+    await delay(100);
+  } while (Date.now() < mutationDeadline);
+  assert.equal(mutatedValue, '120001', 'the fixture click must alter the embedded DataLens source');
   const staleApply = await fetch(`${base}/api/apply`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ id: stalePrepared.id }) });
   assert.equal(staleApply.status, 400);
   assert.match((await staleApply.json()).error, /DataLens изменился после предпросмотра/i);
@@ -620,6 +642,7 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
     await uiPage.waitForFunction(() => document.querySelector('#connection strong')?.textContent === 'Браузер подключён');
     assert.deepEqual(pageErrors, [], 'application UI must initialize without JavaScript errors');
     await uiPage.locator('#file').setInputFiles(planWorkbook);
+    await uiPage.locator('#excel-preview table').waitFor({ state: 'visible' });
     await uiPage.locator('#plan-url').fill('https://core.ag-media.ru/documents/mediaplans/999/edit');
     await uiPage.locator('#open-plan').click();
     await uiPage.locator('#read-plan').click();

@@ -9,6 +9,7 @@ const $ = id => document.getElementById(id);
 let sheets = [], selectedSheet = null, reportTables = [], selectedReport = null, coreTable = null, workbookName = '';
 let latestProposal = null;
 let activeBrowserPage = 0, browserPages = [], snapshotBusy = false;
+let planOpening = false;
 let adminFeedbackLoaded = false;
 const headerTerms = ['площад', 'назван', 'кампан', 'описан', 'расход', 'бюджет', 'клик', 'показ', 'лид', 'цель', 'cr1', 'cpc', 'cpm', 'cpl'];
 
@@ -68,10 +69,13 @@ function setConnection(connected, pages = []) {
   box.querySelector('div:nth-child(2) span').textContent = !connected ? 'Страницы Core и DataLens появятся во встроенной панели ниже.' : needsLogin ? 'Открыта форма входа. Авторизуйся на сайте; вход сбросится при обновлении План-контроля.' : 'Страницы и вход в сервисы доступны во встроенной панели до обновления План-контроля.';
   const chip = box.querySelector('.status-chip'); chip.textContent = !connected ? 'НЕ ПОДКЛЮЧЁН' : needsLogin ? 'НУЖЕН ВХОД' : 'ПОДКЛЮЧЁН'; chip.className = `status-chip ${!connected?'muted':needsLogin?'warn':'ok'}`;
   ['capture','read-plan'].forEach(id => $(id).disabled = !connected);
+  if (planOpening) $('read-plan').disabled = true;
   const select = $('core-page');
+  const selectedCorePage = select.value;
   select.innerHTML = pages.length ? pages.map(p => { let host='about:blank'; try{host=new URL(p.url).hostname;}catch{} return `<option value="${p.i}">${esc(p.title || p.url)} · ${esc(host)}</option>`; }).join('') : '<option>Нет открытых вкладок</option>';
   select.disabled = !pages.length;
-  if (!pages.some(p=>p.i===Number(select.value)) && pages.length) select.selectedIndex=0;
+  if (pages.some(p => String(p.i) === selectedCorePage)) select.value = selectedCorePage;
+  else if (pages.length) select.selectedIndex = 0;
   const browserSelect=$('browser-page');
   browserSelect.innerHTML=pages.length?pages.map(p=>{let host='';try{host=new URL(p.url).hostname}catch{}return `<option value="${p.i}">${esc(p.title||host||p.url)} · ${esc(host)}</option>`}).join(''):'<option>Нет открытых вкладок</option>';
   browserSelect.disabled=!pages.length;
@@ -595,7 +599,13 @@ $('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;workbookName
 $('sheet').onchange=()=>loadSheet(Number($('sheet').value));
 $('header-row').onchange=refreshSheetHeader;
 const dz=$('dropzone');for(const ev of ['dragenter','dragover'])dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag')});for(const ev of ['dragleave','drop'])dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag')});dz.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f){$('file').files=e.dataTransfer.files;$('file').dispatchEvent(new Event('change'));}});
-$('open-plan').onclick=async()=>{try{const r=await api('/api/open-plan',{method:'POST',body:JSON.stringify({url:$('plan-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);$('core-page').value=String(r.activePage);toast('Указанный МП открыт во встроенной вкладке');}catch(e){toast(e.message);}};
+$('open-plan').onclick=async()=>{
+  if(planOpening)return;
+  planOpening=true;$('open-plan').disabled=true;$('read-plan').disabled=true;
+  try{const r=await api('/api/open-plan',{method:'POST',body:JSON.stringify({url:$('plan-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);$('core-page').value=String(r.activePage);toast('Указанный МП открыт во встроенной вкладке');}
+  catch(e){toast(e.message);}
+  finally{planOpening=false;$('open-plan').disabled=false;$('read-plan').disabled=!browserPages.length;}
+};
 $('browser-page').onchange=()=>{activeBrowserPage=Number($('browser-page').value);refreshBrowserSnapshot();};
 $('browser-new-tab').onclick=async()=>{try{const r=await api('/api/new-tab',{method:'POST',body:'{}'});activeBrowserPage=r.activePage;setConnection(true,r.pages);refreshBrowserSnapshot();}catch(e){toast(e.message);}};
 $('open-report').onclick=async()=>{try{const r=await api('/api/browser-open',{method:'POST',body:JSON.stringify({url:$('report-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);refreshBrowserSnapshot();toast('Открыта указанная ссылка отчёта');}catch(e){toast(e.message);}};
