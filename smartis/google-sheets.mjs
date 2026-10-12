@@ -15,13 +15,46 @@ function safeSheetTitle(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-export function createGoogleSheetsService({ clientId = '', clientSecret = '', publicOrigin = '' } = {}) {
-  const configured = Boolean(clientId && clientSecret && /^https:\/\//i.test(publicOrigin));
-  const callbackUrl = configured ? `${publicOrigin.replace(/\/$/, '')}/api/smartis/google/callback` : '';
+export function createGoogleSheetsService({ clientId = '', clientSecret = '', publicOrigin = '', serviceAccountEmail = '', serviceAccountPrivateKey = '' } = {}) {
+  const userOAuthConfigured = Boolean(clientId && clientSecret && /^https:\/\//i.test(publicOrigin));
+  const privateKey = String(serviceAccountPrivateKey || '').replace(/\\n/g, '\n');
+  const serviceAccountConfigured = Boolean(serviceAccountEmail && privateKey.includes('PRIVATE KEY'));
+  const configured = serviceAccountConfigured || userOAuthConfigured;
+  const authMode = serviceAccountConfigured ? 'service_account' : userOAuthConfigured ? 'user_oauth' : 'not_configured';
+  const callbackUrl = userOAuthConfigured ? `${publicOrigin.replace(/\/$/, '')}/api/smartis/google/callback` : '';
   const flows = new Map();
+  let serviceToken = null;
+  let serviceTokenExpiresAt = 0;
+  let serviceTokenPromise = null;
+
+  async function getServiceAccountToken() {
+    if (!serviceAccountConfigured) throw new Error('Сервисный аккаунт Google ещё не настроен администратором приложения.');
+    if (serviceToken && serviceTokenExpiresAt > Date.now() + 60_000) return serviceToken;
+    if (serviceTokenPromise) return serviceTokenPromise;
+    serviceTokenPromise = (async () => {
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ iss: serviceAccountEmail, scope: SCOPES.join(' '), aud: OAUTH_ENDPOINT, iat: issuedAt, exp: issuedAt + 3600 })}`;
+      const signer = crypto.createSign('RSA-SHA256');
+      signer.update(unsigned);
+      signer.end();
+      const assertion = `${unsigned}.${signer.sign(privateKey, 'base64url')}`;
+      const form = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion });
+      const response = await fetch(OAUTH_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form, signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) throw new Error(`Не удалось получить токен сервисного аккаунта Google (HTTP ${response.status}).`);
+      const token = await response.json();
+      if (!token.access_token || token.token_type?.toLowerCase() !== 'bearer') throw new Error('Google вернул неполный ответ авторизации сервисного аккаунта.');
+      serviceToken = token.access_token;
+      serviceTokenExpiresAt = Date.now() + Math.max(60, Number(token.expires_in) || 3600) * 1000;
+      return serviceToken;
+    })();
+    try { return await serviceTokenPromise; }
+    finally { serviceTokenPromise = null; }
+  }
 
   function begin(session) {
-    if (!configured) throw new Error('Подключение Google ещё не настроено администратором приложения.');
+    if (serviceAccountConfigured) throw new Error('Google Sheets подключён сервисным аккаунтом приложения.');
+    if (!userOAuthConfigured) throw new Error('Подключение Google ещё не настроено администратором приложения.');
     const state = crypto.randomBytes(32).toString('base64url');
     const verifier = crypto.randomBytes(48).toString('base64url');
     const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
@@ -74,7 +107,8 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   }
 
   async function accessToken(session) {
-    if (!configured) throw new Error('Подключение Google ещё не настроено администратором приложения.');
+    if (serviceAccountConfigured) return getServiceAccountToken();
+    if (!userOAuthConfigured) throw new Error('Подключение Google ещё не настроено администратором приложения.');
     const auth = session.googleAuth;
     if (!auth) throw new Error('Сначала подключи Google во вкладке Smartis.');
     if (auth.expiresAt > Date.now() + 60_000) return auth.accessToken;
@@ -93,6 +127,10 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
     if (response.status === 401 && session.googleAuth?.refreshToken) {
       session.googleAuth.expiresAt = 0;
       response = await send(await accessToken(session));
+    } else if (response.status === 401 && serviceAccountConfigured) {
+      serviceToken = null;
+      serviceTokenExpiresAt = 0;
+      response = await send(await getServiceAccountToken());
     }
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) throw new Error(`Google Sheets API отказала в доступе (HTTP ${response.status}). Проверь доступ аккаунта к таблице и разрешение Google.`);
@@ -104,12 +142,14 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
 
   return {
     configured,
+    authMode,
+    serviceAccountEmail,
     callbackUrl,
     begin,
     callback,
     setCallbackError,
     disconnect,
-    hasSession: session => Boolean(session.googleAuth?.accessToken),
+    hasSession: session => serviceAccountConfigured || Boolean(session.googleAuth?.accessToken),
     spreadsheetId: safeId,
     async metadata(session, value) {
       const id = safeId(value);

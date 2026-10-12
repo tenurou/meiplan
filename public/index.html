@@ -100,9 +100,9 @@
         <span id="smartis-connection" class="status-chip muted">GOOGLE НЕ ПОДКЛЮЧЁН</span>
       </section>
       <section class="card smartis-card">
-        <div class="step-head"><span class="step-number">01</span><div><h2>Подключение Google Sheets</h2><p>Доступ запрашивается отдельно для каждого пользователя</p></div></div>
-        <div class="smartis-controls"><button id="smartis-google-connect" class="button primary" type="button">Подключить Google</button><button id="smartis-google-disconnect" class="button ghost" type="button" hidden>Отключить</button><small id="smartis-google-message" role="status">Токены хранятся только в памяти сессии приложения.</small></div>
-        <p id="smartis-google-setup" class="filter-note" hidden>Администратору нужно настроить OAuth client ID и secret в переменных окружения приложения, затем добавить callback URL <code>/api/smartis/google/callback</code> в Google Cloud Console.</p>
+        <div class="step-head"><span class="step-number">01</span><div><h2>Подключение Google Sheets</h2><p>Для импорта используется сервисный аккаунт приложения</p></div></div>
+        <div class="smartis-controls"><button id="smartis-google-connect" class="button primary" type="button" hidden>Подключить Google</button><button id="smartis-google-disconnect" class="button ghost" type="button" hidden>Отключить</button><small id="smartis-google-message" role="status">Проверяю подключение таблиц…</small></div>
+        <p id="smartis-google-setup" class="filter-note" hidden>Настрой сервисный аккаунт Google на сервере и дай ему роль редактора таблицы. Адрес сервисного аккаунта появится здесь; личный Google-вход сотрудникам не нужен.</p>
       </section>
       <section class="card smartis-card">
         <div class="step-head"><span class="step-number">02</span><div><h2>Выгрузка Smartis</h2><p>Пока поддерживается источник VK. Остальные источники будут отмечены и пропущены.</p></div></div>

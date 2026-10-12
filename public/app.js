@@ -620,13 +620,15 @@ async function refreshState(){
   try {
     const s=await api('/api/state'); setConnection(s.connected,s.pages);
     if (s.smartis) {
+      const serviceAccountMode = s.smartis.googleAuthMode === 'service_account';
+      $('smartis-google-connect').hidden = serviceAccountMode || !s.smartis.googleConfigured;
       $('smartis-google-connect').disabled = !s.smartis.googleConfigured || s.smartis.googleConnected;
       $('smartis-google-connect').textContent = s.smartis.googleConnected ? 'Google подключён' : 'Подключить Google';
-      $('smartis-google-disconnect').hidden = !s.smartis.googleConnected;
+      $('smartis-google-disconnect').hidden = serviceAccountMode || !s.smartis.googleConnected;
       $('smartis-google-setup').hidden = s.smartis.googleConfigured;
-      $('smartis-connection').textContent = s.smartis.googleConnected ? 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
+      $('smartis-connection').textContent = s.smartis.googleConnected ? serviceAccountMode ? 'СЕРВИСНЫЙ АККАУНТ' : 'GOOGLE ПОДКЛЮЧЁН' : s.smartis.googleConfigured ? 'GOOGLE НЕ ПОДКЛЮЧЁН' : 'НУЖНА НАСТРОЙКА';
       $('smartis-connection').className = `status-chip ${s.smartis.googleConnected?'ok':s.smartis.googleConfigured?'muted':'warn'}`;
-      $('smartis-google-message').textContent = s.smartis.googleError || (s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : 'OAuth-подключение Google не настроено администратором.');
+      $('smartis-google-message').textContent = s.smartis.googleError || (serviceAccountMode ? `Подключён сервисный аккаунт${s.smartis.serviceAccountEmail ? ` ${s.smartis.serviceAccountEmail}` : ''}; личный вход Google не нужен.` : s.smartis.googleConnected ? 'Google доступен в этой сессии. При обновлении страницы потребуется новое подключение.' : s.smartis.googleConfigured ? 'Подключи Google, чтобы выбрать накопительную таблицу.' : s.smartis.serviceAccountEmail ? `Сервисный аккаунт ${s.smartis.serviceAccountEmail} ещё не настроен полностью.` : 'Сервисный аккаунт Google не настроен администратором.');
       if (!s.smartis.googleConnected && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; }
     }
     $('admin-feedback').hidden = !s.isAdmin;

@@ -34,7 +34,7 @@ const host = process.env.AGM_HOST || '127.0.0.1';
 const port = Number(process.env.AGM_PORT || 8765);
 const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host.toLowerCase());
 const publicOrigin = (process.env.AGM_PUBLIC_ORIGIN || '').replace(/\/$/, '');
-const googleSheets = createGoogleSheetsService({ clientId: process.env.AGM_GOOGLE_CLIENT_ID || '', clientSecret: process.env.AGM_GOOGLE_CLIENT_SECRET || '', publicOrigin });
+const googleSheets = createGoogleSheetsService({ clientId: process.env.AGM_GOOGLE_CLIENT_ID || '', clientSecret: process.env.AGM_GOOGLE_CLIENT_SECRET || '', publicOrigin, serviceAccountEmail: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_EMAIL || '', serviceAccountPrivateKey: process.env.AGM_GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '' });
 const allowedHosts = new Set((process.env.AGM_ALLOWED_HOSTS || `127.0.0.1,localhost,${host}`).split(',').map(value => value.trim().toLowerCase()).filter(Boolean));
 if (!isLoopback && (!users.length || !/^https:\/\//i.test(publicOrigin))) throw new Error('Для сетевого запуска задай AGM_USERS_FILE с пользователями и AGM_PUBLIC_ORIGIN=https://...; без них сервер остаётся loopback-only.');
 if (!isLoopback && !process.env.AGM_ALLOWED_HOSTS) throw new Error('Для сетевого запуска явно задай AGM_ALLOWED_HOSTS для reverse proxy.');
@@ -405,7 +405,7 @@ const server = http.createServer(async (req, res) => {
   recordBrowserActivity(state, req.url);
 
   try {
-    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
+    if (req.method === 'GET' && req.url === '/api/state') return send(res, 200, { connected: !!current().context, isAdmin: !!current().adminUser && current().adminExpiresAt > Date.now(), pages: await pagesState(), workbook: current().workbook ? current().workbook.sheets.map(s => ({ name: s.name, rows: s.rows.length })) : [], workbookFileName: current().workbookFileName, reportCaptured: !!current().activeReport, licensing: { ...license.getStatus(), enforcement: false }, smartis: { googleConfigured: googleSheets.configured, googleConnected: googleSheets.hasSession(current()), googleAuthMode: googleSheets.authMode, serviceAccountEmail: googleSheets.serviceAccountEmail, googleError: current().googleError || null, target: SMARTIS_CONFIG.target, sourceModes: Object.entries(SMARTIS_CONFIG.sources).map(([id, source]) => ({ id, title: source.title, status: source.status })) } });
     if (req.method === 'POST' && req.url === '/api/smartis/google/start') {
       current().googleError = null;
       return send(res, 200, { url: googleSheets.begin(current()) });
