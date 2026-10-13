@@ -11,6 +11,7 @@ let latestProposal = null;
 let activeBrowserPage = 0, browserPages = [], snapshotBusy = false;
 let planOpening = false;
 let adminFeedbackLoaded = false;
+let smartisWorkbook = null, smartisTarget = null, smartisPreview = null;
 const headerTerms = ['площад', 'назван', 'кампан', 'описан', 'расход', 'бюджет', 'клик', 'показ', 'лид', 'цель', 'cr1', 'cpc', 'cpm', 'cpl'];
 
 function setTheme(theme) {
@@ -553,9 +554,77 @@ function planPeriodForReport(){
   }
   return inferPlanMonth(hints.filter(Boolean));
 }
+function smartisRenderPreview(result) {
+  const { source, reconciliation } = result;
+  const hasNewRows = reconciliation.additionCount > 0;
+  $('smartis-audit-status').textContent = hasNewRows ? result.writeAvailable ? 'ГОТОВО К ВНЕСЕНИЮ' : 'ГОТОВО К КОПИРОВАНИЮ' : 'НЕТ НОВЫХ СТРОК';
+  $('smartis-audit-status').className = `status-chip ${hasNewRows?'warn':'ok'}`;
+  const notes = [
+    `<li class="${source.missingPersonIdRows?'warn':'pass'}">Выгрузка: ${source.sourceRows} непустых строк; без Person ID: ${source.missingPersonIdRows}; готово к импорту: ${source.importable}.</li>`,
+    `<li class="${reconciliation.additionCount?'warn':'pass'}">Новых лидов: ${reconciliation.additionCount}; уже в таблице: ${reconciliation.alreadyPresentCount}; следующая строка: ${reconciliation.nextRowNumber}.</li>`
+  ];
+  if (source.duplicateCount) notes.push(`<li class="warn">Повторные Person ID в файле: ${source.duplicateCount}; одинаковые объединены, конфликты исключены.</li>`);
+  if (source.conflictCount) notes.push(`<li class="error">Конфликтующие ID пропущены: ${source.conflictCount}.</li>`);
+  if (source.ignoredCount) notes.push(`<li class="warn">Неподдерживаемые / неизвестные источники пропущены: ${source.ignoredCount}. Правила VK к ним не применялись.</li>`);
+  if (reconciliation.existingMismatchCount) notes.push(`<li class="error">ID с отличающимися данными: ${reconciliation.existingMismatchCount}. Существующие строки не изменяются.</li>`);
+  if (reconciliation.duplicatedTargetCount) notes.push(`<li class="warn">В целевом листе уже есть дубли ID: ${reconciliation.duplicatedTargetCount}; они сохранены без изменений.</li>`);
+  if (source.warningCount) notes.push(`<li class="warn">Поля требуют ручного внимания: ${source.warningCount}; первые 100 предупреждений в таблице ниже.</li>`);
+  let body = `<ul class="alert-list">${notes.join('')}</ul>`;
+  if (reconciliation.additions.length) {
+    body += `<div class="table-wrap"><table class="mini-table"><thead><tr><th>A · Person ID</th><th>B · Тип</th><th>C · Дата</th><th>D · Контакт</th><th>E · Канал</th><th>F · Площадка</th><th>G · Кампания</th><th>H · Вид помещения</th><th>I · Объект</th><th>J · Причина отказа</th><th>K · post_view</th></tr></thead><tbody>${reconciliation.additions.map(row=>`<tr><td>${esc(row.personId)}</td><td>${esc(row.leadType)}</td><td>${esc(row.createdAt)}</td><td>${esc(row.contact)}</td><td>${esc(row.channel)}</td><td>${esc(row.platform)}</td><td>${esc(row.campaign)}</td><td>${esc(row.propertyType)}</td><td>${esc(row.property)}</td><td>${esc(row.rejectionReason)}</td><td>${esc(row.postView)}</td></tr>`).join('')}</tbody></table></div>`;
+  } else body += '<div class="empty-state"><strong>Добавлять нечего</strong><small>Новых ID нет; существующие строки оставлены без изменений.</small></div>';
+  if (reconciliation.additionCount > reconciliation.additions.length) body += `<small class="preview-note">В предпросмотре показаны первые ${reconciliation.additions.length} из ${reconciliation.additionCount} строк. Нижнее окно копирует весь набор.</small>`;
+  if (source.ignoredCount) body += `<h3 class="smartis-subhead">Пропущенные строки</h3><div class="table-wrap"><table class="mini-table"><thead><tr><th>Excel row</th><th>Person ID</th><th>Source</th><th>Почему пропущена</th></tr></thead><tbody>${source.ignored.map(row=>`<tr><td>${esc(row.sourceRow)}</td><td>${esc(row.personId)}</td><td>${esc(row.source)}</td><td>${esc(row.reason)}</td></tr>`).join('')}</tbody></table>${source.ignoredCount>source.ignored.length?`<small class="preview-note">Показаны первые ${source.ignored.length} из ${source.ignoredCount} пропущенных строк.</small>`:''}</div>`;
+  if (source.warningCount) body += `<h3 class="smartis-subhead">Предупреждения полей</h3><div class="table-wrap"><table class="mini-table"><thead><tr><th>Excel row</th><th>Person ID</th><th>Предупреждение</th></tr></thead><tbody>${source.warnings.map(row=>`<tr><td>${esc(row.sourceRow)}</td><td>${esc(row.personId)}</td><td>${esc(row.warning)}</td></tr>`).join('')}</tbody></table></div>`;
+  $('smartis-results').innerHTML = body;
+  $('smartis-append-row').hidden = !result.writeAvailable;
+  $('smartis-append').disabled = !result.writeAvailable || !result.previewId;
+  $('smartis-append').hidden = !result.writeAvailable;
+  $('smartis-append').textContent = `Добавить ${reconciliation.additionCount} отсутствующих`;
+  $('smartis-paste-output').value = result.pasteTsv || '';
+  $('smartis-copy').disabled = !result.copyAvailable;
+  $('smartis-copy').textContent = `Скопировать ${reconciliation.additionCount} строк`;
+  $('smartis-copy-info').textContent = result.copyAvailable ? `${reconciliation.additionCount} строк · 11 колонок A:K · заголовки не включены` : 'Новых строк для копирования нет.';
+  $('smartis-copy-status').textContent = result.copyAvailable ? `Сверка завершена ${new Date(result.targetReadAt).toLocaleString('ru-RU')}. Данные в Google не изменены.` : 'После сверки здесь появятся только отсутствующие Person ID.';
+}
+
+async function smartisLoadTarget() {
+  const button=$('smartis-load-target');button.disabled=true;$('smartis-target-info').textContent='Читаю актуальный список из таблицы…';
+  try {
+    const info=await api('/api/smartis/sheet',{method:'POST',body:'{}'});smartisTarget=info;
+    $('smartis-prepare').disabled=!info.sheets.length||!smartisWorkbook;
+    const sheet=info.sheets[0];
+    $('smartis-target-info').textContent=sheet?`${info.title} · ${sheet.title} · ${sheet.rowCount} строк · список обновлён`:'В таблице не найден закреплённый лист.';
+    if(!sheet)throw new Error('В таблице не найден лист «Лиды Смартис».');
+    return true;
+  } catch(error) { smartisTarget=null;$('smartis-prepare').disabled=true;$('smartis-target-info').textContent=`Не удалось прочитать точку 0: ${error.message}`;toast(error.message);return false; }
+  finally {button.disabled=false;}
+}
+
+async function smartisPrepare() {
+  const sheetName=$('smartis-sheet').value;
+  if(!sheetName||!smartisTarget?.sheets?.length){toast('Загрузи Excel и дождись чтения точки 0.');return;}
+  $('smartis-prepare').disabled=true;$('smartis-audit-status').textContent='СВЕРЯЮ…';
+  try {
+    const result=await api('/api/smartis/preview',{method:'POST',body:JSON.stringify({sourceSheet:sheetName,manualSource:$('smartis-source-mode').value})});
+    smartisPreview=result;smartisRenderPreview(result);if(result.copyAvailable)toast('Сверка готова. Скопируй строки в нижнем блоке и вставь в Google Sheets.');
+  } catch(error) {$('smartis-audit-status').textContent='ОШИБКА СВЕРКИ';$('smartis-audit-status').className='status-chip bad';$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;smartisPreview=null;}
+  finally {$('smartis-prepare').disabled=!smartisTarget||!smartisWorkbook?.sheets?.length;}
+}
+
+async function smartisRefreshHistory() {
+  try { const {entries}=await api('/api/smartis/history');$('smartis-history').innerHTML=entries.length?`<div class="table-wrap"><table class="mini-table"><thead><tr><th>Время</th><th>Файл</th><th>Лист</th><th>Строк</th><th>Проверка</th></tr></thead><tbody>${entries.map(item=>`<tr><td>${esc(new Date(item.at).toLocaleString('ru-RU'))}</td><td>${esc(item.fileName)}</td><td>${esc(item.sheetTitle)}</td><td>${esc(item.count)}</td><td>${item.verified?'Построчно подтверждено':'Нужна проверка'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty-state"><strong>Импортов пока не было</strong></div>'; }
+  catch(error) {$('smartis-history').innerHTML=`<ul class="alert-list"><li class="warn">${esc(error.message)}</li></ul>`;}
+}
+
 async function refreshState(){
   try {
     const s=await api('/api/state'); setConnection(s.connected,s.pages);
+    if (s.smartis) {
+      $('smartis-append-row').hidden = !s.smartis.googleWritable;
+      $('smartis-append').hidden = !s.smartis.googleWritable;
+      if (!s.smartis.googleReadable && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; $('smartis-copy').disabled = true; $('smartis-paste-output').value=''; }
+    }
     $('admin-feedback').hidden = !s.isAdmin;
     $('admin-login-toggle').hidden = !!s.isAdmin;
     if (s.isAdmin) $('admin-login-form').hidden = true;
@@ -674,7 +743,42 @@ $('admin-logout').addEventListener('click',async()=>{
 ['exact-leads','thousand-impressions','skip-excluded'].forEach(id=>$(id).addEventListener('change',runAudit));
 $('amount-tolerance').addEventListener('input',runAudit);
 $('amount-tolerance').addEventListener('change',()=>{normalizeAmountTolerance();runAudit();});
+document.querySelectorAll('.app-tab').forEach(button=>button.addEventListener('click',()=>{
+  document.querySelectorAll('.app-tab').forEach(item=>item.classList.toggle('active',item===button));
+  $('mediaplan-view').hidden=button.dataset.view!=='mediaplan-view';
+  $('smartis-view').hidden=button.dataset.view!=='smartis-view';
+  if(button.dataset.view==='smartis-view'){smartisRefreshHistory();if(!smartisTarget)smartisLoadTarget();}
+}));
+$('smartis-file').addEventListener('change',async event=>{
+  const file=event.target.files?.[0];if(!file)return;
+  $('smartis-paste-output').value='';$('smartis-copy').disabled=true;$('smartis-copy-info').textContent='После сверки здесь появятся строки A:K без заголовков.';$('smartis-copy-status').textContent='Сначала загрузи Excel и нажми «Сверить».';
+  $('smartis-file-name').textContent=file.name;$('smartis-results').innerHTML='<div class="empty-state"><strong>Читаю XLSX…</strong></div>';
+  try{
+    const result=await api('/api/smartis/workbook',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name)},body:await file.arrayBuffer()});
+    smartisWorkbook=result;$('smartis-sheet').innerHTML=result.sheets.map(sheet=>`<option value="${esc(sheet.name)}">${esc(sheet.name)} · ${sheet.rows} строк</option>`).join('');$('smartis-sheet').disabled=!result.sheets.length;$('smartis-file-name').textContent=`${file.name} · ${result.sheets.length} листов`;
+    smartisPreview=null;$('smartis-append').disabled=true;$('smartis-prepare').disabled=!smartisTarget||!result.sheets.length;$('smartis-results').innerHTML='<div class="empty-state"><strong>Теперь нажми «Сверить»</strong></div>';
+  }catch(error){$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;}
+});
+$('smartis-load-target').addEventListener('click',smartisLoadTarget);
+$('smartis-prepare').addEventListener('click',smartisPrepare);
+$('smartis-sheet').addEventListener('change',()=>{smartisPreview=null;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';});
+$('smartis-copy').addEventListener('click',async()=>{
+  const output=$('smartis-paste-output'),text=output.value;
+  if(!text)return;
+  try{await navigator.clipboard.writeText(text);$('smartis-copy-status').textContent=`Скопировано ${smartisPreview?.reconciliation?.additionCount||0} строк. Вставь через Ctrl+V в первую пустую строку столбца A.`;}
+  catch{output.focus();output.select();const copied=document.execCommand('copy');$('smartis-copy-status').textContent=copied?`Скопировано ${smartisPreview?.reconciliation?.additionCount||0} строк. Вставь через Ctrl+V в первую пустую строку столбца A.`:'Не удалось получить доступ к буферу. Выдели текст в окне и скопируй Ctrl+C.';}
+});
+$('smartis-append').addEventListener('click',async()=>{
+  if(!smartisPreview?.previewId)return;
+  const count=smartisPreview.reconciliation.additionCount;
+  if(!window.confirm(`Добавить ${count} отсутствующих лидов в «${smartisPreview.target.sheetTitle}»? Существующие строки не изменятся.`))return;
+  const button=$('smartis-append');button.disabled=true;$('smartis-append-status').textContent='Добавляю строки и перечитываю лист для сверки…';
+  try{const result=await api('/api/smartis/append',{method:'POST',body:JSON.stringify({previewId:smartisPreview.previewId,confirm:true})});$('smartis-append-status').textContent=result.message;smartisPreview=null;await smartisPrepare();await smartisRefreshHistory();}
+  catch(error){$('smartis-append-status').textContent=error.message;button.disabled=false;}
+});
+$('smartis-history-refresh').addEventListener('click',smartisRefreshHistory);
 refreshState();
+smartisLoadTarget();
 setInterval(refreshState, 4000);
 setInterval(refreshBrowserSnapshot, 1300);
 window.addEventListener('pagehide', () => {
