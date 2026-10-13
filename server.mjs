@@ -455,10 +455,9 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && req.url === '/api/smartis/sheet') {
-      const body = JSON.parse((await readBody(req, 12000)).toString('utf8'));
+      await readBody(req, 12000);
       if (!googleSheets.hasReadAccess(current())) throw new Error('Таблица недоступна для чтения по ссылке.');
-      const spreadsheetId = googleSheets.spreadsheetId(body.spreadsheet || SMARTIS_CONFIG.target.spreadsheetId);
-      const metadata = await googleSheets.metadata(current(), spreadsheetId);
+      const metadata = await googleSheets.metadata(current(), SMARTIS_CONFIG.target.spreadsheetId);
       return send(res, 200, { spreadsheetId: metadata.spreadsheetId, title: metadata.title, sheets: metadata.sheets.map(({ sheetId, title, rowCount, columnCount }) => ({ sheetId, title, rowCount, columnCount })) });
     }
     if (req.method === 'POST' && req.url === '/api/smartis/workbook') {
@@ -482,7 +481,7 @@ const server = http.createServer(async (req, res) => {
       const sourceSheet = current().smartisWorkbook?.sheets?.find(sheet => sheet.name === body.sourceSheet);
       if (!sourceSheet) throw new Error('Загрузи Excel Smartis и выбери лист.');
       const prepared = prepareSmartisRows(sourceSheet, { manualSource: body.manualSource === 'vk' ? 'vk' : 'auto' });
-      const target = await smartisTarget(current(), body.spreadsheetId || SMARTIS_CONFIG.target.spreadsheetId, body.sheetId ?? SMARTIS_CONFIG.target.sheetId);
+      const target = await smartisTarget(current(), SMARTIS_CONFIG.target.spreadsheetId, SMARTIS_CONFIG.target.sheetId);
       const currentTarget = await readSmartisTarget(current(), target);
       const referenceIdHashes = smartisReferenceIdHashes(target);
       const reconciliation = reconcileSmartis(prepared, currentTarget.rows, referenceIdHashes);

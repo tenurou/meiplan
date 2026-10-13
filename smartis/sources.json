@@ -30,7 +30,7 @@
     "spreadsheetId": "1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA",
     "spreadsheetTitle": "Копия ЛСР // Накопительный отчет // 2025 для mei",
     "sheetTitle": "Лиды Смартис",
-    "sheetId": 0,
+    "sheetId": 1058433141,
     "columns": ["person_id", "lead_type", "created_at", "contact", "channel", "platform", "campaign", "property_type", "property", "rejection_reason", "post_view"]
   }
 }

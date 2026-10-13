@@ -589,25 +589,27 @@ function smartisRenderPreview(result) {
 }
 
 async function smartisLoadTarget() {
+  const button=$('smartis-load-target');button.disabled=true;$('smartis-target-info').textContent='Читаю актуальный список из таблицы…';
   try {
-    const info=await api('/api/smartis/sheet',{method:'POST',body:JSON.stringify({spreadsheet:$('smartis-spreadsheet').value})});smartisTarget=info;
-    $('smartis-target-sheet').innerHTML=info.sheets.map(sheet=>`<option value="${sheet.sheetId}">${esc(sheet.title)} · ${sheet.rowCount} строк</option>`).join('');
-    $('smartis-target-sheet').disabled=!info.sheets.length;
+    const info=await api('/api/smartis/sheet',{method:'POST',body:'{}'});smartisTarget=info;
     $('smartis-prepare').disabled=!info.sheets.length||!smartisWorkbook;
-    $('smartis-target-info').textContent=`${info.title} · ${info.spreadsheetId}`;
-    toast('Лист прочитан для сверки. Данные в Google не менялись.');
-  } catch(error) { toast(error.message); }
+    const sheet=info.sheets[0];
+    $('smartis-target-info').textContent=sheet?`${info.title} · ${sheet.title} · ${sheet.rowCount} строк · список обновлён`:'В таблице не найден закреплённый лист.';
+    if(!sheet)throw new Error('В таблице не найден лист «Лиды Смартис».');
+    return true;
+  } catch(error) { smartisTarget=null;$('smartis-prepare').disabled=true;$('smartis-target-info').textContent=`Не удалось прочитать точку 0: ${error.message}`;toast(error.message);return false; }
+  finally {button.disabled=false;}
 }
 
 async function smartisPrepare() {
-  const sheetName=$('smartis-sheet').value, targetSheet=smartisTarget?.sheets.find(sheet=>String(sheet.sheetId)===$('smartis-target-sheet').value);
-  if(!sheetName||!targetSheet){toast('Выбери листы источника и назначения.');return;}
+  const sheetName=$('smartis-sheet').value;
+  if(!sheetName||!smartisTarget?.sheets?.length){toast('Загрузи Excel и дождись чтения точки 0.');return;}
   $('smartis-prepare').disabled=true;$('smartis-audit-status').textContent='СВЕРЯЮ…';
   try {
-    const result=await api('/api/smartis/preview',{method:'POST',body:JSON.stringify({sourceSheet:sheetName,manualSource:$('smartis-source-mode').value,spreadsheetId:smartisTarget.spreadsheetId,sheetId:targetSheet.sheetId})});
+    const result=await api('/api/smartis/preview',{method:'POST',body:JSON.stringify({sourceSheet:sheetName,manualSource:$('smartis-source-mode').value})});
     smartisPreview=result;smartisRenderPreview(result);if(result.copyAvailable)toast('Сверка готова. Скопируй строки в нижнем блоке и вставь в Google Sheets.');
   } catch(error) {$('smartis-audit-status').textContent='ОШИБКА СВЕРКИ';$('smartis-audit-status').className='status-chip bad';$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;smartisPreview=null;}
-  finally {$('smartis-prepare').disabled=false;}
+  finally {$('smartis-prepare').disabled=!smartisTarget||!smartisWorkbook?.sheets?.length;}
 }
 
 async function smartisRefreshHistory() {
@@ -745,7 +747,7 @@ document.querySelectorAll('.app-tab').forEach(button=>button.addEventListener('c
   document.querySelectorAll('.app-tab').forEach(item=>item.classList.toggle('active',item===button));
   $('mediaplan-view').hidden=button.dataset.view!=='mediaplan-view';
   $('smartis-view').hidden=button.dataset.view!=='smartis-view';
-  if(button.dataset.view==='smartis-view')smartisRefreshHistory();
+  if(button.dataset.view==='smartis-view'){smartisRefreshHistory();if(!smartisTarget)smartisLoadTarget();}
 }));
 $('smartis-file').addEventListener('change',async event=>{
   const file=event.target.files?.[0];if(!file)return;
@@ -754,14 +756,12 @@ $('smartis-file').addEventListener('change',async event=>{
   try{
     const result=await api('/api/smartis/workbook',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name)},body:await file.arrayBuffer()});
     smartisWorkbook=result;$('smartis-sheet').innerHTML=result.sheets.map(sheet=>`<option value="${esc(sheet.name)}">${esc(sheet.name)} · ${sheet.rows} строк</option>`).join('');$('smartis-sheet').disabled=!result.sheets.length;$('smartis-file-name').textContent=`${file.name} · ${result.sheets.length} листов`;
-    smartisPreview=null;$('smartis-append').disabled=true;$('smartis-prepare').disabled=!smartisTarget||!result.sheets.length;$('smartis-results').innerHTML='<div class="empty-state"><strong>Теперь проверь целевую таблицу и нажми «Сверить»</strong></div>';
+    smartisPreview=null;$('smartis-append').disabled=true;$('smartis-prepare').disabled=!smartisTarget||!result.sheets.length;$('smartis-results').innerHTML='<div class="empty-state"><strong>Теперь нажми «Сверить»</strong></div>';
   }catch(error){$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;}
 });
 $('smartis-load-target').addEventListener('click',smartisLoadTarget);
 $('smartis-prepare').addEventListener('click',smartisPrepare);
-$('smartis-target-sheet').addEventListener('change',()=>{$('smartis-prepare').disabled=!smartisWorkbook;smartisPreview=null;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';});
 $('smartis-sheet').addEventListener('change',()=>{smartisPreview=null;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';});
-$('smartis-spreadsheet').addEventListener('input',()=>{smartisTarget=null;smartisPreview=null;$('smartis-target-sheet').disabled=true;$('smartis-prepare').disabled=true;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';$('smartis-target-info').textContent='Проверь новую ссылку перед чтением.';});
 $('smartis-copy').addEventListener('click',async()=>{
   const output=$('smartis-paste-output'),text=output.value;
   if(!text)return;
@@ -778,6 +778,7 @@ $('smartis-append').addEventListener('click',async()=>{
 });
 $('smartis-history-refresh').addEventListener('click',smartisRefreshHistory);
 refreshState();
+smartisLoadTarget();
 setInterval(refreshState, 4000);
 setInterval(refreshBrowserSnapshot, 1300);
 window.addEventListener('pagehide', () => {

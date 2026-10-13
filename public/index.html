@@ -103,9 +103,8 @@
         <label class="dropzone smartis-dropzone" id="smartis-dropzone"><input id="smartis-file" type="file" accept=".xlsx"><span class="upload-icon">↑</span><strong>Загрузи XLSX выгрузку</strong><small>Файл обрабатывается в сессии и удаляется после чтения</small><em id="smartis-file-name"></em></label>
         <div class="select-row"><label for="smartis-sheet">Лист</label><select id="smartis-sheet" disabled><option>Сначала загрузи Excel</option></select></div>
         <div class="select-row"><label for="smartis-source-mode">Неизвестную площадку</label><select id="smartis-source-mode"><option value="auto">Не определять вручную</option><option value="vk">Считать VK (только неизвестные)</option></select></div>
-        <div class="input-action"><input id="smartis-spreadsheet" type="url" aria-label="Ссылка на Google-таблицу" placeholder="Ссылка на Google Sheets" value="https://docs.google.com/spreadsheets/d/1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA/edit"><button id="smartis-load-target" class="button secondary" type="button">Проверить таблицу</button></div>
-        <div class="select-row"><label for="smartis-target-sheet">Лист назначения</label><select id="smartis-target-sheet" disabled><option>Сначала проверь таблицу</option></select><button id="smartis-prepare" class="button ghost" type="button" disabled>Сверить</button></div>
-        <div id="smartis-target-info" class="preview-note" role="status">Целевая таблица не загружена.</div>
+        <div class="smartis-reference-row"><strong>Точка 0 · Лиды Смартис</strong><div><button id="smartis-load-target" class="button secondary" type="button">Обновить точку 0</button><button id="smartis-prepare" class="button ghost" type="button" disabled>Сверить</button></div></div>
+        <div id="smartis-target-info" class="preview-note" role="status">Загружаю исходный список…</div>
       </section>
       <section class="card smartis-card">
         <div class="audit-head"><div><div class="eyebrow">ПРЕДПРОСМОТР И СВЕРКА</div><h2>Новые строки и пропуски</h2></div><span id="smartis-audit-status" class="status-chip muted">ЖДЁТ ДАННЫЕ</span></div>

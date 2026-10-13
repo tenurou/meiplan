@@ -30,8 +30,11 @@ manual copy flow does not require them.
 4. Copy the A:K block and paste it in Google Sheets; existing rows are not included.
 5. Run the check again to verify the pasted IDs.
 
-The default reference is spreadsheet
-`1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA`, worksheet `Лиды Смартис`. A
+The fixed reference is spreadsheet
+`1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA`, worksheet `Лиды Смартис`
+(`gid=1058433141`). Users do not need to paste or select the destination URL;
+the app reads this sheet automatically and rereads its live contents for each
+reconciliation. A
 server-side baseline stores hashes of its initial `Smartis Person ID` values,
 without contacts or lead rows; the live sheet is also read for each
 reconciliation so newly pasted IDs are picked up. Source rows are matched only
