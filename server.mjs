@@ -174,7 +174,7 @@ async function smartisTarget(state, spreadsheetId, sheetId) {
   const metadata = await googleSheets.metadata(state, normalizedId);
   const selected = metadata.sheets.find(sheet => Number(sheet.sheetId) === Number(sheetId));
   if (!selected) throw new Error('В выбранной Google-таблице нет указанного листа. Перечитай настройки.');
-  if (normalizedId === SMARTIS_CONFIG.target.spreadsheetId && (Number(selected.sheetId) !== SMARTIS_CONFIG.target.sheetId || selected.title !== SMARTIS_CONFIG.target.sheetTitle)) throw new Error('Стандартная таблица не совпадает с ожидаемым файлом или листом «Лиды Смартис».');
+  if (normalizedId === SMARTIS_CONFIG.target.spreadsheetId && selected.title !== SMARTIS_CONFIG.target.sheetTitle) throw new Error('Стандартная таблица не совпадает с ожидаемым файлом или листом «Лиды Смартис».');
   return { spreadsheetId: normalizedId, spreadsheetTitle: metadata.title, sheetId: Number(selected.sheetId), sheetTitle: selected.title, gridRows: selected.rowCount };
 }
 async function readSmartisTarget(state, target) {

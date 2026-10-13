@@ -2,7 +2,7 @@
 // Replace the placeholder with the same random secret entered in the app's
 // administrator settings. Keep this script private to its owner.
 const SHARED_SECRET = 'REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_CHARACTERS';
-const ALLOWED_SPREADSHEET_ID = '1gEG-wZ0cbwW89RCnX0PGM8KJpO5GyVuRGW7ZRvHaayQ';
+const ALLOWED_SPREADSHEET_ID = '1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA';
 
 function doPost(event) {
   try {

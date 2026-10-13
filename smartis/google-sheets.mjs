@@ -51,13 +51,13 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   let serviceTokenExpiresAt = 0;
   let serviceTokenPromise = null;
 
-  async function publicValues(spreadsheetId, sheetId, sheetTitle) {
-    if (!publicTarget || spreadsheetId !== publicTarget.spreadsheetId || Number(sheetId) !== Number(publicTarget.sheetId) || sheetTitle !== publicTarget.sheetTitle) {
+  async function publicValues(spreadsheetId, _sheetId, sheetTitle) {
+    if (!publicTarget || spreadsheetId !== publicTarget.spreadsheetId || sheetTitle !== publicTarget.sheetTitle) {
       throw new Error('По публичной ссылке разрешено читать только лист «Лиды Смартис» стандартной таблицы.');
     }
-    const url = new URL(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export`);
-    url.searchParams.set('format', 'csv');
-    url.searchParams.set('gid', String(sheetId));
+    const url = new URL(`https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/gviz/tq`);
+    url.searchParams.set('tqx', 'out:csv');
+    url.searchParams.set('sheet', sheetTitle);
     const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 MeiPlan/1.0' }, signal: AbortSignal.timeout(25_000), redirect: 'follow' });
     if (!response.ok) throw new Error(`Таблица недоступна по ссылке (HTTP ${response.status}). Проверь, что просмотр открыт по ссылке.`);
     if (!/text\/csv/i.test(response.headers.get('content-type') || '')) throw new Error('Google не отдал таблицу как CSV. Проверь доступ «Все, у кого есть ссылка — просмотр».');
@@ -204,7 +204,7 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
   return {
     get configured() { return Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || userOAuthConfigured); },
     get authMode() { return bridgeUrl && bridgeSecret ? 'apps_script' : authMode; },
-    get publicCsvAvailable() { return Boolean(publicTarget?.spreadsheetId && publicTarget?.sheetId && publicTarget?.sheetTitle); },
+    get publicCsvAvailable() { return Boolean(publicTarget?.spreadsheetId && publicTarget?.sheetTitle); },
     serviceAccountEmail,
     get appsScriptUrl() { return bridgeUrl; },
     configureAppsScript,
@@ -214,20 +214,32 @@ export function createGoogleSheetsService({ clientId = '', clientSecret = '', pu
     setCallbackError,
     disconnect,
     hasSession: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken),
-    hasReadAccess: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken || (publicTarget?.spreadsheetId && publicTarget?.sheetId && publicTarget?.sheetTitle)),
+    hasReadAccess: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken || (publicTarget?.spreadsheetId && publicTarget?.sheetTitle)),
     hasWriteAccess: session => Boolean((bridgeUrl && bridgeSecret) || serviceAccountConfigured || session.googleAuth?.accessToken),
     spreadsheetId: safeId,
     async metadata(session, value) {
       const id = safeId(value);
-      if (bridgeUrl && bridgeSecret) return bridgeRequest('metadata', { spreadsheetId: id });
+      if (bridgeUrl && bridgeSecret) {
+        const data = await bridgeRequest('metadata', { spreadsheetId: id });
+        if (id !== publicTarget?.spreadsheetId) return data;
+        const sheet = (data.sheets || []).find(item => item.properties?.title === publicTarget.sheetTitle);
+        if (!sheet) throw new Error('В исходной таблице не найден лист «Лиды Смартис».');
+        return { ...data, sheets: [sheet] };
+      }
       if (!hasCredentials(session) && publicTarget?.spreadsheetId === id) {
         const rows = await publicValues(id, publicTarget.sheetId, publicTarget.sheetTitle);
-        return { spreadsheetId: id, title: 'Копия ЛСР // Накопительный отчет // 2025', sheets: [{ sheetId: publicTarget.sheetId, title: publicTarget.sheetTitle, index: 0, rowCount: rows.length, columnCount: 11 }] };
+        return { spreadsheetId: id, title: publicTarget.spreadsheetTitle || '', sheets: [{ sheetId: publicTarget.sheetId ?? 0, title: publicTarget.sheetTitle, index: 0, rowCount: rows.length, columnCount: 11 }] };
       }
       const url = new URL(`${SHEETS_API}/${encodeURIComponent(id)}`);
       url.searchParams.set('fields', 'spreadsheetId,properties(title),sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))');
       const data = await request(session, url);
-      return { spreadsheetId: data.spreadsheetId, title: data.properties?.title || '', sheets: (data.sheets || []).map(item => ({ sheetId: item.properties.sheetId, title: item.properties.title, index: item.properties.index, rowCount: item.properties.gridProperties?.rowCount || 0, columnCount: item.properties.gridProperties?.columnCount || 0 })) };
+      const sheets = (data.sheets || []).map(item => ({ sheetId: item.properties.sheetId, title: item.properties.title, index: item.properties.index, rowCount: item.properties.gridProperties?.rowCount || 0, columnCount: item.properties.gridProperties?.columnCount || 0 }));
+      if (id === publicTarget?.spreadsheetId) {
+        const sheet = sheets.find(item => item.title === publicTarget.sheetTitle);
+        if (!sheet) throw new Error('В исходной таблице не найден лист «Лиды Смартис».');
+        return { spreadsheetId: data.spreadsheetId, title: data.properties?.title || '', sheets: [sheet] };
+      }
+      return { spreadsheetId: data.spreadsheetId, title: data.properties?.title || '', sheets };
     },
     async values(session, spreadsheetId, sheetTitle) {
       const id = safeId(spreadsheetId), range = `${safeSheetTitle(sheetTitle)}!A:K`;

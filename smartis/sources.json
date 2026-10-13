@@ -27,9 +27,10 @@
     "urban-ads": { "title": "Urban Ads", "status": "planned", "platformAliases": ["urban ads", "urban_ads"] }
   },
   "target": {
-    "spreadsheetId": "1gEG-wZ0cbwW89RCnX0PGM8KJpO5GyVuRGW7ZRvHaayQ",
+    "spreadsheetId": "1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA",
+    "spreadsheetTitle": "Копия ЛСР // Накопительный отчет // 2025 для mei",
     "sheetTitle": "Лиды Смартис",
-    "sheetId": 1058433141,
+    "sheetId": 0,
     "columns": ["person_id", "lead_type", "created_at", "contact", "channel", "platform", "campaign", "property_type", "property", "rejection_reason", "post_view"]
   }
 }

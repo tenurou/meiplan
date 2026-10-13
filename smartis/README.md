@@ -6,16 +6,17 @@ and are never rewritten using VK rules.
 
 ## Google Sheets access without Google Cloud or Apps Script
 
-The LSR cumulative report is read from its published CSV export. The app does
-not write to Google Sheets: after deduplicating by `Smartis Person ID`, it
+The LSR cumulative report is read from its public CSV view, restricted to the
+configured spreadsheet and the exact `Лиды Смартис` tab. The app does not write
+to Google Sheets: after deduplicating by `Smartis Person ID`, it
 shows the new records as tab-separated text in the exact A:K order. Copy the
 block and paste it into the first empty row, starting in column A.
 
 The configured LSR sheet must allow viewing by anyone with its link. This is
 read-only access from the app, but anyone who obtains that link can view the
-sheet. The CSV reader is restricted to the configured spreadsheet ID and the
-`Лиды Смартис` sheet ID. After pasting, run the check again to confirm those IDs
-are now present.
+sheet. The CSV reader is restricted to the configured spreadsheet ID and tab
+title; it selects that tab by name and does not expose other tabs. After
+pasting, run the check again to confirm those IDs are now present.
 
 Optional direct-write integrations remain available to deployments that already
 have Google OAuth, a service account, or an Apps Script bridge configured. The
@@ -29,8 +30,10 @@ manual copy flow does not require them.
 4. Copy the A:K block and paste it in Google Sheets; existing rows are not included.
 5. Run the check again to verify the pasted IDs.
 
-The default destination is the LSR cumulative report, worksheet `Лиды Смартис`,
-sheet ID `1058433141`. Source rows are matched only by `Smartis Person ID`.
+The default reference is spreadsheet
+`1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA`, worksheet `Лиды Смартис`. It
+is read live for each reconciliation; the app does not store a stale copy of
+its lead data. Source rows are matched only by `Smartis Person ID`.
 Identical duplicate source rows collapse to one; conflicting rows with the same
 ID are skipped. Existing duplicates are reported and preserved.
 
