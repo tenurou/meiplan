@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -143,7 +144,12 @@ export function rowsForTarget(leads) {
   return leads.map(lead => [lead.personId, lead.leadType, lead.createdAt, lead.contact, lead.channel, lead.platform, lead.campaign, lead.propertyType, lead.property, lead.rejectionReason, lead.postView]);
 }
 
-export function reconcileSmartis(source, targetRows) {
+export function smartisPersonIdHash(personId) {
+  const normalized = asText(personId).replace(/\.0$/, '');
+  return crypto.createHash('sha256').update(normalized).digest('hex');
+}
+
+export function reconcileSmartis(source, targetRows, referenceIdHashes = new Set()) {
   const existing = new Map();
   for (let index = 1; index < targetRows.length; index++) {
     const row = targetRows[index] || [];
@@ -153,15 +159,20 @@ export function reconcileSmartis(source, targetRows) {
     existing.get(id).push(row.slice(0, 11).map(asText));
   }
   const additions = [], existingIds = [], existingMismatchIds = [];
+  let baselineMatchCount = 0;
   for (const lead of source.records) {
     const found = existing.get(lead.personId);
-    if (!found) { additions.push(lead); continue; }
+    if (!found) {
+      if (referenceIdHashes.has(smartisPersonIdHash(lead.personId))) { existingIds.push(lead.personId); baselineMatchCount++; }
+      else additions.push(lead);
+      continue;
+    }
     existingIds.push(lead.personId);
     const expected = rowsForTarget([lead])[0];
     if (!found.some(row => expected.every((value, i) => !value || asText(row[i]) === asText(value)))) existingMismatchIds.push(lead.personId);
   }
   const duplicatedTarget = [...existing.entries()].filter(([, rows]) => rows.length > 1).map(([personId, rows]) => ({ personId, count: rows.length }));
-  return { additions, existingIds, existingMismatchIds, duplicatedTarget, targetIds: [...existing.keys()], currentRowCount: targetRows.length };
+  return { additions, existingIds, existingMismatchIds, duplicatedTarget, targetIds: [...existing.keys()], currentRowCount: targetRows.length, baselineMatchCount };
 }
 
 export function summarizeLead(lead) {

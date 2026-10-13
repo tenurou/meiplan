@@ -13,7 +13,7 @@ import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, ver
 import { calculationModel, corePlacementGroup, eligiblePlanMetrics, isManualEntryHeader, planMetric, planPlacementGroup } from './public/plan-rules.js';
 import { parseNumericValue } from './public/numeric.js';
 import { rankFactTables } from './public/report-selector.js';
-import { SMARTIS_CONFIG, prepareSmartisRows, reconcileSmartis, rowsForTarget, summarizeLead } from './smartis/leads.mjs';
+import { SMARTIS_CONFIG, prepareSmartisRows, reconcileSmartis, rowsForTarget, smartisPersonIdHash, summarizeLead } from './smartis/leads.mjs';
 import { createGoogleSheetsService } from './smartis/google-sheets.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +35,7 @@ const port = Number(process.env.AGM_PORT || 8765);
 const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host.toLowerCase());
 const publicOrigin = (process.env.AGM_PUBLIC_ORIGIN || '').replace(/\/$/, '');
 const smartisBridgePath = path.join(dataDir, 'smartis-apps-script.json');
+const smartisReferencePath = path.join(dataDir, 'smartis-reference-baseline.json');
 let smartisBridgeSettings = {};
 if (fs.existsSync(smartisBridgePath)) {
   try {
@@ -181,6 +182,17 @@ async function readSmartisTarget(state, target) {
   const rows = await googleSheets.values(state, target.spreadsheetId, target.sheetTitle);
   const lastDataIndex = rows.findLastIndex(row => row.some(value => String(value ?? '').trim() !== ''));
   return { rows: lastDataIndex >= 0 ? rows.slice(0, lastDataIndex + 1) : [], lastDataIndex };
+}
+function smartisReferenceIdHashes(target) {
+  if (target.spreadsheetId !== SMARTIS_CONFIG.target.spreadsheetId || target.sheetTitle !== SMARTIS_CONFIG.target.sheetTitle) return new Set();
+  if (!fs.existsSync(smartisReferencePath)) return new Set();
+  let baseline;
+  try { baseline = JSON.parse(fs.readFileSync(smartisReferencePath, 'utf8')); }
+  catch { throw new Error('Начальный реестр Smartis повреждён. Сверка остановлена до восстановления реестра.'); }
+  if (baseline.version !== 1 || baseline.spreadsheetId !== SMARTIS_CONFIG.target.spreadsheetId || baseline.sheetTitle !== SMARTIS_CONFIG.target.sheetTitle || !Array.isArray(baseline.personIdHashes) || baseline.personIdHashes.some(hash => !/^[a-f0-9]{64}$/.test(hash))) {
+    throw new Error('Начальный реестр Smartis не совпадает с выбранной таблицей. Сверка остановлена.');
+  }
+  return new Set(baseline.personIdHashes);
 }
 function safeGoogleCallbackPage(message) {
   const text = String(message).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
@@ -472,13 +484,14 @@ const server = http.createServer(async (req, res) => {
       const prepared = prepareSmartisRows(sourceSheet, { manualSource: body.manualSource === 'vk' ? 'vk' : 'auto' });
       const target = await smartisTarget(current(), body.spreadsheetId || SMARTIS_CONFIG.target.spreadsheetId, body.sheetId ?? SMARTIS_CONFIG.target.sheetId);
       const currentTarget = await readSmartisTarget(current(), target);
-      const reconciliation = reconcileSmartis(prepared, currentTarget.rows);
+      const referenceIdHashes = smartisReferenceIdHashes(target);
+      const reconciliation = reconcileSmartis(prepared, currentTarget.rows, referenceIdHashes);
       const previewId = crypto.randomUUID();
       const additions = reconciliation.additions;
       current().smartisPreviews.clear();
       current().smartisPreviews.set(previewId, { target, additions, sourceDigest: smartisDigest(additions.map(lead => rowsForTarget([lead])[0])), targetDigest: smartisDigest(currentTarget.rows), targetLastIndex: currentTarget.lastDataIndex, createdAt: Date.now(), fileName: current().smartisWorkbook.fileName, sourceSheet: sourceSheet.name });
       const writeAvailable = additions.length > 0 && googleSheets.hasWriteAccess(current());
-      return send(res, 200, { previewId, previewMode: writeAvailable ? 'write' : 'copy', pasteTsv: smartisClipboardTsv(additions), copyAvailable: additions.length > 0, targetReadAt: new Date().toISOString(), target, source: { fileName: current().smartisWorkbook.fileName, sheet: sourceSheet.name, sourceRows: prepared.sourceRows, importable: prepared.records.length, missingPersonIdRows: prepared.missingPersonIdRows, duplicates: prepared.duplicateIds.slice(0,100), duplicateCount: prepared.duplicateIds.length, conflicts: prepared.conflictingIds.slice(0,100), conflictCount: prepared.conflictingIds.length, ignored: prepared.ignored.slice(0,100), ignoredCount: prepared.ignored.length, warnings: prepared.warnings.slice(0,100), warningCount: prepared.warnings.length }, reconciliation: { additions: additions.slice(0,500).map(summarizeLead), additionCount: additions.length, alreadyPresentCount: reconciliation.existingIds.length, existingMismatchCount: reconciliation.existingMismatchIds.length, duplicatedTargetCount: reconciliation.duplicatedTarget.length, currentRowCount: currentTarget.rows.length, nextRowNumber: currentTarget.lastDataIndex + 2 }, writeAvailable });
+      return send(res, 200, { previewId, previewMode: writeAvailable ? 'write' : 'copy', pasteTsv: smartisClipboardTsv(additions), copyAvailable: additions.length > 0, targetReadAt: new Date().toISOString(), target, source: { fileName: current().smartisWorkbook.fileName, sheet: sourceSheet.name, sourceRows: prepared.sourceRows, importable: prepared.records.length, missingPersonIdRows: prepared.missingPersonIdRows, duplicates: prepared.duplicateIds.slice(0,100), duplicateCount: prepared.duplicateIds.length, conflicts: prepared.conflictingIds.slice(0,100), conflictCount: prepared.conflictingIds.length, ignored: prepared.ignored.slice(0,100), ignoredCount: prepared.ignored.length, warnings: prepared.warnings.slice(0,100), warningCount: prepared.warnings.length }, reconciliation: { additions: additions.slice(0,500).map(summarizeLead), additionCount: additions.length, alreadyPresentCount: reconciliation.existingIds.length, baselineIdCount: referenceIdHashes.size, existingMismatchCount: reconciliation.existingMismatchIds.length, duplicatedTargetCount: reconciliation.duplicatedTarget.length, currentRowCount: currentTarget.rows.length, nextRowNumber: currentTarget.lastDataIndex + 2 }, writeAvailable });
     }
     if (req.method === 'POST' && req.url === '/api/smartis/append') {
       if (!googleSheets.hasWriteAccess(current())) throw new Error('Прямой записи нет. Скопируй подготовленные строки и вставь их в Google Sheets вручную.');

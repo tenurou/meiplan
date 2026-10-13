@@ -31,9 +31,11 @@ manual copy flow does not require them.
 5. Run the check again to verify the pasted IDs.
 
 The default reference is spreadsheet
-`1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA`, worksheet `Лиды Смартис`. It
-is read live for each reconciliation; the app does not store a stale copy of
-its lead data. Source rows are matched only by `Smartis Person ID`.
+`1YehJBnYD02D9xJzqISHhZDmQxaLNIG4Yk_dZ4mC8uOA`, worksheet `Лиды Смартис`. A
+server-side baseline stores hashes of its initial `Smartis Person ID` values,
+without contacts or lead rows; the live sheet is also read for each
+reconciliation so newly pasted IDs are picked up. Source rows are matched only
+by `Smartis Person ID`.
 Identical duplicate source rows collapse to one; conflicting rows with the same
 ID are skipped. Existing duplicates are reported and preserved.
 
