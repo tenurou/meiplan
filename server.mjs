@@ -8,8 +8,10 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createLicenseService } from './licensing.mjs';
 import { makeUserId, readUsers, verifyBasicAuthorization } from './auth.mjs';
-import { forceKillChromium, recordBrowserActivity } from './browser-cleanup.mjs';
-import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, verifyCoreChecks } from './reconcile.mjs';
+import { forceKillChromium, recordBrowserActivity, shouldSweepSession } from './browser-cleanup.mjs';
+import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, expectedFactValues, verifyCoreChecks } from './reconcile.mjs';
+import { matchPromotionName, promotionColumn } from './public/report-selector.js';
+import { combineFactSources } from './public/fact-aggregation.js';
 import { calculationModel, corePlacementGroup, eligiblePlanMetrics, isManualEntryHeader, planMetric, planPlacementGroup } from './public/plan-rules.js';
 import { parseNumericValue } from './public/numeric.js';
 import { rankFactTables } from './public/report-selector.js';
@@ -75,7 +77,7 @@ function sessionFor(user) {
     fs.mkdirSync(userDir, { recursive: true, mode: 0o700 });
     const profileDir = path.join(userDir, 'browser-profile');
     const workbookPath = path.join(userDir, 'uploaded-plan.xlsx');
-    sessions.set(id, { id, username: user.username, adminUser: null, adminExpiresAt: 0, userDir, profileDir, workbookPath, secret: crypto.randomBytes(24).toString('hex'), context: null, workbook: null, workbookFileName: null, activeReport: null, proposals: new Map(), smartisWorkbook: null, smartisPreviews: new Map(), googleAuth: null, googleError: null, lastActivity: Date.now(), loading: null });
+    sessions.set(id, { id, username: user.username, secret: crypto.randomBytes(32).toString('base64url'), adminUser: null, adminExpiresAt: 0, userDir, profileDir, workbookPath, context: null, workbook: null, workbookFileName: null, activeReport: null, reportSnapshots: new Map(), proposals: new Map(), smartisWorkbook: null, smartisPreviews: new Map(), googleAuth: null, googleError: null, lastActivity: Date.now(), loading: null, activeOperations: 0, closing: false, drainWaiters: [] });
   }
   return sessions.get(id);
 }
@@ -380,10 +382,14 @@ async function authenticateRequest(req, res) {
   const enteringApp = req.method === 'GET' && req.url === '/';
   let sessionToken = cookies['agm-session'];
   let id = /^[A-Za-z0-9_-]{40,64}$/.test(sessionToken || '') ? crypto.createHash('sha256').update(sessionToken).digest('hex').slice(0, 32) : null;
+  let existing = id ? sessions.get(id) : null;
+  if (existing?.closing) { id = null; existing = null; }
   if (id && enteringApp) {
-    const previous = sessions.get(id) || sessionFor({ username: `staff-${id.slice(0, 8)}`, key: id, role: 'user', sessionId: id });
-    await clearSessionWorkspace(previous);
+    const previous = existing || sessionFor({ username: `staff-${id.slice(0, 8)}`, key: id, role: 'user', sessionId: id });
+    previous.closing = true;
     sessions.delete(id);
+    if (previous.activeOperations > 0) await new Promise(resolve => previous.drainWaiters.push(resolve));
+    await clearSessionWorkspace(previous);
     id = null;
   }
   if (!id) {
@@ -393,7 +399,9 @@ async function authenticateRequest(req, res) {
     res.setHeader('Set-Cookie', `agm-session=${sessionToken}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict${secure}`);
   }
   const state = sessions.get(id) || sessionFor({ username: `staff-${id.slice(0, 8)}`, key: id, role: 'user', sessionId: id });
-  await loadUserData(state);
+  state.activeOperations++;
+  try { await loadUserData(state); }
+  catch (error) { state.activeOperations--; throw error; }
   return state;
 }
 
@@ -408,6 +416,7 @@ const server = http.createServer(async (req, res) => {
   const state = await authenticateRequest(req, res);
   if (!state) return;
   return requestStorage.run(state, async () => {
+  try {
   if (req.method === 'GET' && req.url === '/') {
     const html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8').replaceAll('__APP_TOKEN__', state.secret);
     return send(res, 200, html, mime['.html']);
@@ -532,13 +541,14 @@ const server = http.createServer(async (req, res) => {
       const username = String(body.username || '').trim();
       const password = String(body.password || '');
       const remoteKey = String(req.headers['x-real-ip'] || req.socket.remoteAddress || 'unknown');
-      const failures = adminLoginFailures.get(remoteKey) || { count: 0, until: 0 };
+      const failures = adminLoginFailures.get(remoteKey) || { count: 0, until: 0, expiresAt: Date.now() + 15 * 60 * 1000 };
       if (failures.until > Date.now()) return send(res, 429, { error: 'Слишком много попыток. Подожди несколько минут и попробуй снова.' });
       const authHeader = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
       const user = await verifyBasicAuthorization(authHeader, users, authCache);
       if (!user || user.role !== 'admin') {
         failures.count++;
         failures.until = failures.count >= 5 ? Date.now() + 5 * 60 * 1000 : 0;
+        failures.expiresAt = Date.now() + 15 * 60 * 1000;
         adminLoginFailures.set(remoteKey, failures);
         return send(res, 401, { error: 'Неверное имя пользователя или пароль администратора.' });
       }
@@ -576,7 +586,7 @@ const server = http.createServer(async (req, res) => {
           await current().context.route('https://reports.core.ag-media.ru/fixture/datalens',route=>route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:fs.readFileSync(reportShellPath,'utf8')}));
           await current().context.route('https://reports.core.ag-media.ru/fixture/datalens-frame',route=>route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:fs.readFileSync(reportFixturePath,'utf8')}));
         }
-        current().context.on('close', () => { state.context = null; state.activeReport = null; state.proposals.clear(); });
+        current().context.on('close', () => { state.context = null; state.activeReport = null; state.reportSnapshots?.clear(); state.proposals.clear(); });
         } finally { activeLaunches.delete(state.id); }
       }
       const page = current().context.pages().find(p=>p.url()==='about:blank') || await current().context.newPage();
@@ -904,12 +914,22 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/goto-report-tab') {
       const body=JSON.parse((await readBody(req,10000)).toString('utf8'));
       if(!current().context||!current().context.pages()[Number(body.pageIndex)])throw new Error('Вкладка не подключена');
-      const page=current().context.pages()[Number(body.pageIndex)], ids={sources:'6a',direct:'D1M',promo:'D80'};
-      if(!ids[body.tab]||!isReportPageUrl(page.url()))throw new Error('Недопустимая вкладка отчёта');
-      const url=new URL(page.url());
-      if(!await page.locator('a[href*="tab='+ids[body.tab]+'"]').count())throw new Error('Ссылка отчёта не найдена; вкладку не менял.');
-      url.searchParams.set('tab',ids[body.tab]);
-      await page.goto(url.href,{waitUntil:'domcontentloaded',timeout:15000});
+      const page=current().context.pages()[Number(body.pageIndex)];
+      const labels={sources:/^все источники$/i,direct:/^яндекс директ$/i,promo:/^промостраниц(?:ы|е)$/i,vk:/^vk ads$/i,classifieds:/классифайд/i};
+      if(!labels[body.tab]||!isReportPageUrl(page.url()))throw new Error('Недопустимая вкладка отчёта');
+      const links=page.locator('a').filter({hasText:labels[body.tab]}), count=await links.count();
+      if(count!==1)throw new Error(`Вкладка отчёта ${count?'найдена неоднозначно':'не найдена'}; страницу не менял.`);
+      const href=await links.getAttribute('href');
+      if(!href)throw new Error('Ссылка вкладки не содержит адреса; страницу не менял.');
+      const url=new URL(href,page.url());
+      if(!isReportPageUrl(url.href))throw new Error('Ссылка ведёт не в отчёт DataLens.');
+      // Keep the current dashboard state (date and filters), replacing only the tab
+      // identifier extracted from the actual visible report link.
+      const currentUrl=new URL(page.url());
+      if(url.searchParams.has('tab'))currentUrl.searchParams.set('tab',url.searchParams.get('tab'));
+      else throw new Error('Не удалось извлечь идентификатор вкладки из ссылки отчёта.');
+      for(const [key,value] of url.searchParams)if(key!=='tab'&&!currentUrl.searchParams.has(key))currentUrl.searchParams.set(key,value);
+      await page.goto(currentUrl.href,{waitUntil:'domcontentloaded',timeout:15000});
       await page.waitForTimeout(900);
       return send(res,200,{ok:true,tab:body.tab,url:page.url(),title:await page.title().catch(()=>'' )});
     }
@@ -917,7 +937,7 @@ const server = http.createServer(async (req, res) => {
       const body=JSON.parse((await readBody(req,10000)).toString('utf8'));
       if(!current().context||!current().context.pages()[Number(body.pageIndex)])throw new Error('Вкладка не подключена');
       const page=current().context.pages()[Number(body.pageIndex)];
-      const tabs={sources:'Все источники',direct:'Яндекс Директ',promo:'Промостраницы'};
+      const tabs={sources:/^все источники$/i,direct:/^яндекс директ$/i,promo:/^промостраниц(?:ы|е)$/i,vk:/^vk ads$/i,classifieds:/классифайд/i};
       if(!tabs[body.tab]||!isReportPageUrl(page.url()))throw new Error('Недопустимая вкладка отчёта');
       const link=page.locator('a').filter({hasText:tabs[body.tab]});
       const links=await link.count();
@@ -934,6 +954,41 @@ const server = http.createServer(async (req, res) => {
       if (!current().activeReport) throw new Error('Эта таблица уже изменилась или исчезла. Сними её заново.');
       return send(res, 200, { ok: true, rows: current().activeReport.rows.length, frameUrl: current().activeReport.frameUrl });
     }
+    if (req.method === 'POST' && req.url === '/api/archive-report-table') {
+      const body=JSON.parse((await readBody(req,10000)).toString('utf8'));
+      const candidate=(await tableCandidates()).find(item=>item.id===body.id);
+      if(!candidate)throw new Error('Таблица уже изменилась или исчезла. Сними её заново.');
+      const host=new URL(candidate.frameUrl).hostname;
+      if(host!=='reports.core.ag-media.ru'&&!/^datalens\.(?:yandex|yandex\.ru|yandexcloud\.net)$/.test(host))throw new Error('Можно сохранить только таблицу из DataLens.');
+      const tabs={sources:'Все источники',direct:'Яндекс Директ',promo:'Промостраницы',vk:'VK ADS',classifieds:'Классифайды'};
+      if(!Object.values(tabs).includes(body.tabLabel)||candidate.rows.length<2)throw new Error('Подтверди вкладку-источник и выбери таблицу с данными.');
+      const page=current().context?.pages()[candidate.pageIndex],tabPattern={sources:/^все источники$/i,direct:/^яндекс директ$/i,promo:/^промостраниц(?:ы|е)$/i,vk:/^vk ads$/i,classifieds:/классифайд/i},tabKey=Object.keys(tabs).find(key=>tabs[key]===body.tabLabel);
+      if(!page||!tabKey)throw new Error('Вкладку DataLens не удалось подтвердить.');
+      const tabLinks=page.locator('a').filter({hasText:tabPattern[tabKey]});
+      if(await tabLinks.count()!==1)throw new Error('Вкладка-источник не найдена однозначно; таблицу не сохранял.');
+      const tabHref=await tabLinks.getAttribute('href'),activeTabId=new URL(page.url()).searchParams.get('tab'),linkedTabId=tabHref?new URL(tabHref,page.url()).searchParams.get('tab'):null;
+      if(!activeTabId||!linkedTabId||activeTabId!==linkedTabId)throw new Error(`Открыта другая вкладка DataLens. Для «${body.tabLabel}» сначала открой её в приложении.`);
+      const dateInputs=[];
+      for(const frame of page.frames())if(/^https:\/\/(?:reports\.core\.ag-media\.ru|datalens\.(?:yandex|yandex\.ru|yandexcloud\.net))(\/|$)/.test(frame.url())){
+        const inputs=frame.locator('input[placeholder*="ДД.ММ.ГГГГ"]');for(let index=0;index<await inputs.count();index++)dateInputs.push(await inputs.nth(index).inputValue().catch(()=>''));
+      }
+      const dateRanges=[...new Set(dateInputs.map(value=>String(value).trim()).filter(Boolean))];
+      if(dateRanges.length!==1)throw new Error('Для снимка нужен однозначный период DataLens. Проверь фильтр «Дата».');
+      const dateRange=dateRanges[0],requestedPeriod=body.period;
+      if(requestedPeriod&&dateRange!==`${requestedPeriod.start} - ${requestedPeriod.end}`)throw new Error('Период снимка не совпадает с выбранным периодом МП. Сними таблицу заново после проверки фильтра.');
+      const snapshots=current().reportSnapshots||(current().reportSnapshots=new Map());
+      for(const [id,snapshot] of snapshots)if(Date.now()-snapshot.createdAt>30*60*1000)snapshots.delete(id);
+      if(snapshots.size>=12)throw new Error('В наборе уже 12 таблиц. Удали набор и сними только нужные источники.');
+      const id=crypto.randomBytes(18).toString('hex'),sourceFingerprint=fingerprint(candidate.rows);
+      const snapshot={id,tabLabel:body.tabLabel,rows:candidate.rows,frameUrl:candidate.frameUrl,pageIndex:candidate.pageIndex,pageTitle:candidate.pageTitle,dateRange,reportContext:candidate.reportContext,createdAt:Date.now(),sourceFingerprint,truncated:candidate.rows.length>=3000};
+      snapshots.set(id,snapshot);
+      return send(res,200,{id,tabLabel:snapshot.tabLabel,rows:snapshot.rows,frameUrl:snapshot.frameUrl,pageTitle:snapshot.pageTitle,dateRange:snapshot.dateRange,reportContext:snapshot.reportContext,truncated:snapshot.truncated,createdAt:snapshot.createdAt});
+    }
+    if(req.method==='POST'&&req.url==='/api/remove-report-snapshot'){
+      const body=JSON.parse((await readBody(req,10000)).toString('utf8'));
+      const removed=current().reportSnapshots?.delete(String(body.id))||false;
+      return send(res,200,{ok:true,removed});
+    }
     if (req.method === 'POST' && req.url === '/api/prepare-apply') {
       const body = JSON.parse((await readBody(req, 2_000_000)).toString('utf8'));
       if (!['plan','fact'].includes(body.mode)) throw new Error('Не указан допустимый режим переноса.');
@@ -944,27 +999,35 @@ const server = http.createServer(async (req, res) => {
       if (allowPartial && body.mode !== 'plan' && body.mode !== 'fact') throw new Error('Частичный перенос недоступен для этого источника.');
       const pageIndex = Number(body.pageIndex), data = await readCoreTable(pageIndex);
       if (!body.planUrl || body.planUrl !== data.url) throw new Error('Открытый медиаплан изменился после предпросмотра. Перечитай таблицу и подготовь перенос заново.');
-      let sourceFingerprint = null, sourceRows = null, sourceHeaders = null;
+      let sourceFingerprint = null, sourceRows = null, sourceHeaders = null, sourceSnapshotRefs=[];
       if (body.mode === 'fact') {
-        if (!current().activeReport || body.sourceId !== current().activeReport.id) throw new Error('Выбранная таблица DataLens не подтверждена сервером. Выбери её заново и подготовь перенос повторно.');
-        const reportHost = new URL(current().activeReport.frameUrl).hostname;
-        if (reportHost !== 'reports.core.ag-media.ru' && !/^datalens\.(?:yandex|yandex\.ru|yandexcloud\.net)$/.test(reportHost)) throw new Error('Для переноса факта выбери таблицу DataLens, а не таблицу Core.');
-        const freshReport = (await tableCandidates()).find(candidate => candidate.id === current().activeReport.id);
-        if (!freshReport || fingerprint(freshReport.rows) !== fingerprint(current().activeReport.rows)) throw new Error('Таблица DataLens изменилась. Сними её заново и перепроверь фильтры.');
-        if (allowPartial && freshReport.truncated) throw new Error('Частичный перенос заблокирован: DataLens достиг лимита 3000 строк, источник неполный. Сузь фильтр отчёта.');
-        sourceFingerprint = fingerprint(freshReport.rows);
-        sourceRows = freshReport.rows;
-        sourceHeaders = freshReport.rows[0] || [];
-        const reportHeaders = sourceHeaders;
-        for (const change of (Array.isArray(body.changes) ? body.changes : [])) {
-          const rowKey = String(change.sourceRowKey || '').trim();
-          const sourceHeader = String(change.sourceHeader || '').trim();
-          const sourceNameHeader = String(change.sourceNameHeader || '').trim();
-          const sourceColumnIndexes = reportHeaders.map((header, index) => String(header || '').trim() === sourceHeader ? index : -1).filter(index => index >= 0);
-          const sourceNameIndexes = reportHeaders.map((header, index) => String(header || '').trim() === sourceNameHeader ? index : -1).filter(index => index >= 0);
-          if (!rowKey || sourceColumnIndexes.length !== 1 || sourceNameIndexes.length !== 1) throw new Error('Для одной из ячеек не подтверждена исходная строка или колонка DataLens.');
-          const sourceRows = freshReport.rows.slice(1).filter(row => String(row[sourceNameIndexes[0]] || '').trim() === rowKey);
-          if (sourceRows.length !== 1 || String(sourceRows[0][sourceColumnIndexes[0]] ?? '').trim() !== String(change.sourceValue ?? '').trim()) throw new Error(`Источник DataLens для строки «${rowKey}» изменился. Сними отчёт заново.`);
+        const sourceIds=Array.isArray(body.sourceIds)?[...new Set(body.sourceIds.map(String))]:[];
+        if(sourceIds.length){
+          if(sourceIds.length>12)throw new Error('В переносе допускается не более 12 подтверждённых источников.');
+          const snapshots=current().reportSnapshots||new Map(),snapshotsUsed=sourceIds.map(id=>snapshots.get(id));
+          if(snapshotsUsed.some(snapshot=>!snapshot||Date.now()-snapshot.createdAt>30*60*1000))throw new Error('Один из снимков источника истёк или не принадлежит этой сессии. Сними его заново.');
+          if(snapshotsUsed.some(snapshot=>fingerprint(snapshot.rows)!==snapshot.sourceFingerprint))throw new Error('Сохранённый снимок DataLens повреждён. Пересними источник.');
+          if(new Set(snapshotsUsed.map(snapshot=>snapshot.dateRange)).size!==1)throw new Error('Источники DataLens относятся к разным периодам. Убери снимки не того месяца и собери набор заново.');
+          if(snapshotsUsed.some(snapshot=>snapshot.truncated)&&!allowPartial)throw new Error('DataLens достиг лимита строк. Сузь фильтр до полного набора перед переносом.');
+          const expectedObjects=data.table.rows.slice(1).map(row=>String(row[Number(body.nameCol)]||'').trim()).filter(name=>name&&!/^(?:итого|всего|total)\b/i.test(name)&&!/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(name));
+          const combined=combineFactSources(snapshotsUsed,expectedObjects);sourceRows=combined.rows;sourceHeaders=combined.headers;
+          sourceSnapshotRefs=snapshotsUsed.map(snapshot=>({id:snapshot.id,sourceFingerprint:snapshot.sourceFingerprint}));sourceFingerprint=fingerprint(sourceSnapshotRefs);
+        }else{
+          if (!current().activeReport || body.sourceId !== current().activeReport.id) throw new Error('Выбранная таблица DataLens не подтверждена сервером. Выбери её заново и подготовь перенос повторно.');
+          const reportHost = new URL(current().activeReport.frameUrl).hostname;
+          if (reportHost !== 'reports.core.ag-media.ru' && !/^datalens\.(?:yandex|yandex\.ru|yandexcloud\.net)$/.test(reportHost)) throw new Error('Для переноса факта выбери таблицу DataLens, а не таблицу Core.');
+          const freshReport = (await tableCandidates()).find(candidate => candidate.id === current().activeReport.id);
+          if (!freshReport || fingerprint(freshReport.rows) !== fingerprint(current().activeReport.rows)) throw new Error('Таблица DataLens изменилась. Сними её заново и перепроверь фильтры.');
+          if (allowPartial && freshReport.truncated) throw new Error('Частичный перенос заблокирован: DataLens достиг лимита 3000 строк, источник неполный. Сузь фильтр отчёта.');
+          sourceFingerprint=fingerprint(freshReport.rows);sourceRows=freshReport.rows;sourceHeaders=freshReport.rows[0]||[];
+          const reportHeaders=sourceHeaders;
+          for(const change of (Array.isArray(body.changes)?body.changes:[])){
+            const rowKey=String(change.sourceRowKey||'').trim(),sourceHeader=String(change.sourceHeader||'').trim(),sourceNameHeader=String(change.sourceNameHeader||'').trim();
+            const sourceColumnIndexes=reportHeaders.map((header,index)=>String(header||'').trim()===sourceHeader?index:-1).filter(index=>index>=0),sourceNameIndexes=reportHeaders.map((header,index)=>String(header||'').trim()===sourceNameHeader?index:-1).filter(index=>index>=0);
+            if(!rowKey||sourceColumnIndexes.length!==1||sourceNameIndexes.length!==1)throw new Error('Для одной из ячеек не подтверждена исходная строка или колонка DataLens.');
+            const originalRow=freshReport.rows[Number(change.sourceRowIndex)];
+            if(!originalRow||String(originalRow[sourceNameIndexes[0]]||'').trim()!==rowKey||String(originalRow[sourceColumnIndexes[0]]??'').trim()!==String(change.sourceValue??'').trim())throw new Error(`Исходная строка DataLens «${rowKey}» изменилась. Сними отчёт заново.`);
+          }
         }
       }
       const changes = Array.isArray(body.changes) ? body.changes : [];
@@ -973,6 +1036,16 @@ const server = http.createServer(async (req, res) => {
       if (!Number.isInteger(nameCol) || nameCol<0 || nameCol>=tableHeaders.length) throw new Error('Колонка названия строки не подтверждена. Перечитай медиаплан.');
       const normalizedNameHeader=String(tableHeaders[nameCol]||'').toLowerCase().replace(/ё/g,'е').trim();
       if (!/^(?:описание|название|наименование|кампания|объект продвижения|объект рекламирования|utm source|площадка)(?:\s|$)/.test(normalizedNameHeader)) throw new Error('Выбрана неподходящая колонка для названия строки.');
+      if(body.mode==='fact'){
+        const promotion=promotionColumn(sourceHeaders),expectedFactObjects=tableRows.slice(1).map(row=>String(row[nameCol]||'').trim()).filter(name=>name&&!/^(?:итого|всего|total)\b/i.test(name)&&!/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(name));
+        if(promotion.index<0)throw new Error('Сервер не нашёл однозначный столбец объекта/кампании в DataLens.');
+        for(const sourceRow of sourceRows.slice(1)){
+          const sourceName=String(sourceRow[promotion.index]||'').trim();
+          if(!sourceName||/^(?:итого|всего|total)\b/i.test(sourceName)||/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(sourceName))continue;
+          const resolved=matchPromotionName(sourceName,expectedFactObjects,promotion.kind);
+          if(resolved.status==='ambiguous')throw new Error(`DataLens «${sourceName}» неоднозначно соответствует нескольким строкам Core. Перенос заблокирован.`);
+        }
+      }
       const placementCol=body.mode==='plan'?uniqueHeaderIndex(tableHeaders,'Площадка'):-1;
       if(body.mode==='plan'&&placementCol<0)throw new Error('В МП не найдена единственная колонка «Площадка» для проверки группы размещения.');
       const changeKeys=new Set();
@@ -1009,6 +1082,7 @@ const server = http.createServer(async (req, res) => {
         sourceHeaders=sourceRows[sourceHeaderRowIndex]||null;
         if(!sourceHeaders)throw new Error('Заголовки листа Excel не подтверждены. Перечитай лист и подготовь перенос повторно.');
       }
+      const factExpected=body.mode==='fact'?expectedFactValues({sourceRows,sourceHeaders,targetRows:tableRows,nameCol,parseDisplayNumber,impressionsInThousands:body.impressionsInThousands===true}):null;
       const checkKeys=new Set();
       const safeChecks = checks.map(c => {
         const rowIndex=Number(c.rowIndex), colIndex=Number(c.colIndex), rowKey=String(c.rowKey||'').trim();
@@ -1026,18 +1100,22 @@ const server = http.createServer(async (req, res) => {
         if(String(sourceHeaders[sourceColIndex]||'').trim()!==String(c.sourceHeader||'').trim()||String(sourceHeaders[sourceNameCol]||'').trim()!==String(c.sourceNameHeader||'').trim())throw new Error(`Заголовки источника для «${rowKey} · ${header}» изменились.`);
         const sourceRow=sourceRows[sourceRowIndex]||[];
         if(String(sourceRow[sourceNameCol]||'').trim()!==String(c.sourceRowKey||'').trim()||String(sourceRow[sourceColIndex]??'').trim()!==String(c.sourceValue??'').trim())throw new Error(`Исходная ячейка для «${rowKey} · ${header}» изменилась или указана неверно.`);
-        const sourceNameKey=String(c.sourceRowKey||'').toLowerCase().replace(/ё/g,'е').replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ').replace(/^лср\s+/,'').replace(/\bлейк\b/g,'lake');
-        const targetNameKey=rowKey.toLowerCase().replace(/ё/g,'е').replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ').replace(/^лср\s+/,'').replace(/\bлейк\b/g,'lake');
-        if(!sourceNameKey||sourceNameKey!==targetNameKey)throw new Error(`Строка источника «${c.sourceRowKey}» не соответствует строке МП «${rowKey}».`);
-        const sourceRaw=String(c.sourceValue??'');let expectedValue=parseDisplayNumber(sourceRaw);
-        if(expectedValue===null)throw new Error(`Значение источника для «${rowKey} · ${header}» не числовое.`);
-        if(body.mode==='fact'&&/(?:cr[123]|ctr)/i.test(normalizedHeader)){
-          if(sourceRaw.includes('%'))expectedValue/=100;
-          else if(String(c.sourceHeader||'').includes('%'))throw new Error(`Единицы процента для источника «${c.sourceHeader}» неоднозначны.`);
+        if(body.mode==='fact'){
+          const promotion=promotionColumn(sourceHeaders),expectedNames=tableRows.slice(1).map(row=>String(row[nameCol]||'').trim()).filter(name=>name&&!/^(?:итого|всего|total)\b/i.test(name)&&!/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(name));
+          const resolved=promotion.index<0?{status:'missing'}:matchPromotionName(c.sourceRowKey,expectedNames,promotion.kind);
+          if(resolved.status!=='matched'||resolved.value!==rowKey)throw new Error(`Строка DataLens «${c.sourceRowKey}» не подтверждена для МП «${rowKey}».`);
+          const sourceValue=factExpected.values.get(`${rowIndex}:${colIndex}`);
+          if(sourceValue===undefined||!sameCellValue(value,sourceValue,header))throw new Error(`Значение «${rowKey} · ${header}» не совпадает с серверным расчётом DataLens.`);
+        }else{
+          const sourceNameKey=String(c.sourceRowKey||'').toLowerCase().replace(/ё/g,'е').replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ').replace(/^лср\s+/,'').replace(/\bлейк\b/g,'lake');
+          const targetNameKey=rowKey.toLowerCase().replace(/ё/g,'е').replace(/[^\p{L}\p{N}]+/gu,' ').trim().replace(/\s+/g,' ').replace(/^лср\s+/,'').replace(/\bлейк\b/g,'lake');
+          if(!sourceNameKey||sourceNameKey!==targetNameKey)throw new Error(`Строка источника «${c.sourceRowKey}» не соответствует строке МП «${rowKey}».`);
+          const sourceRaw=String(c.sourceValue??'');let expectedValue=parseDisplayNumber(sourceRaw);
+          if(expectedValue===null)throw new Error(`Значение источника для «${rowKey} · ${header}» не числовое.`);
+          if(/показ/i.test(normalizedHeader))expectedValue/=1000;
+          if(/клик/i.test(normalizedHeader))expectedValue=Math.round(expectedValue);
+          if(!sameCellValue(value,String(Number(expectedValue.toFixed(6))),header))throw new Error(`Ожидаемое значение для «${rowKey} · ${header}» не соответствует подтверждённой ячейке источника.`);
         }
-        if(/показ/i.test(normalizedHeader)&&(body.mode==='plan'||body.impressionsInThousands===true))expectedValue/=1000;
-        if(body.mode==='plan'&&/клик/i.test(normalizedHeader))expectedValue=Math.round(expectedValue);
-        if(!sameCellValue(value,String(Number(expectedValue.toFixed(6))),header))throw new Error(`Ожидаемое значение для «${rowKey} · ${header}» не соответствует подтверждённой ячейке источника.`);
         if(body.mode==='plan'){
           const sourceGroup=excelPlacementGroup(sourceHeaders,sourceRow),targetContext=corePlacementContext(tableRows,rowIndex,nameCol,placementCol);
           if(!sourceGroup||sourceGroup!==targetContext.groupKey)throw new Error(`Строка Excel «${c.sourceRowKey}» находится в другой или неопределённой группе размещения для «${rowKey}».`);
@@ -1057,7 +1135,7 @@ const server = http.createServer(async (req, res) => {
         if(!check||check.rowKey!==change.rowKey||!sameCellValue(check.value,change.value,change.header))throw new Error(`Для изменения «${change.rowKey} · ${change.header}» нет совпадающей построчной проверки.`);
       }
       const id=crypto.randomBytes(18).toString('hex');
-      const item={id,pageIndex,tableIndex:data.table.index,planUrl:data.url,mode:body.mode,changes:safeChanges,checks:safeChecks,amountTolerance,sourceId:body.mode==='fact'?body.sourceId:null,sourceFingerprint,createdAt:Date.now()};
+      const item={id,pageIndex,tableIndex:data.table.index,planUrl:data.url,mode:body.mode,changes:safeChanges,checks:safeChecks,amountTolerance,sourceId:body.mode==='fact'?body.sourceId:null,sourceSnapshotRefs,sourceFingerprint,createdAt:Date.now()};
       current().proposals.set(id,item);
       setTimeout(()=>current().proposals.delete(id),10*60*1000).unref();
       return send(res,200,{id,planUrl:data.url,changes:safeChanges,expiresInSeconds:600});
@@ -1068,8 +1146,13 @@ const server = http.createServer(async (req, res) => {
       if (!item) throw new Error('Предпросмотр устарел. Сними таблицу МП и создай его заново.');
       if (item.staged) throw new Error('Этот предпросмотр уже внесён в форму Core. Проверь значения и подтверди отдельное сохранение.');
       if (item.sourceFingerprint) {
-        const currentSource = (await tableCandidates()).find(candidate => candidate.id === item.sourceId);
-        if (!currentSource || fingerprint(currentSource.rows) !== item.sourceFingerprint) throw new Error('DataLens изменился после предпросмотра. Ничего не внес; сними отчёт заново.');
+        if(item.sourceSnapshotRefs?.length){
+          const snapshots=current().reportSnapshots||new Map(),refs=item.sourceSnapshotRefs.map(ref=>snapshots.get(ref.id));
+          if(refs.some((snapshot,index)=>!snapshot||snapshot.sourceFingerprint!==item.sourceSnapshotRefs[index].sourceFingerprint||fingerprint(snapshot.rows)!==snapshot.sourceFingerprint)||fingerprint(item.sourceSnapshotRefs)!==item.sourceFingerprint)throw new Error('Один из снимков DataLens изменился или истёк. Ничего не внес; сними источники заново.');
+        }else{
+          const currentSource=(await tableCandidates()).find(candidate=>candidate.id===item.sourceId);
+          if(!currentSource||fingerprint(currentSource.rows)!==item.sourceFingerprint)throw new Error('DataLens изменился после предпросмотра. Ничего не внес; сними отчёт заново.');
+        }
       }
       if (current().context.pages()[item.pageIndex]?.url()!==item.planUrl) throw new Error('Вкладка Core изменилась после предпросмотра. Остановил заполнение.');
       const beforeApply=await readCoreTable(item.pageIndex);
@@ -1091,11 +1174,19 @@ const server = http.createServer(async (req, res) => {
           if (await clickTarget.count()) await clickTarget.click({timeout:3000}).catch(()=>cell.click({timeout:3000})); else await cell.click({timeout:3000});
           const input=cell.locator('input,textarea').first();
           await input.waitFor({state:'visible',timeout:3500});
+          const editState=await input.evaluate(el=>({disabled:!!el.disabled,readOnly:!!el.readOnly,ariaDisabled:el.getAttribute('aria-disabled')==='true'}));
+          if(editState.disabled||editState.readOnly||editState.ariaDisabled)throw new Error(`Поле «${c.rowKey} · ${c.header}» неактивно в Core; значение не менял.`);
           await input.fill(c.value);
           await input.press('Enter').catch(()=>{});
-          await page.waitForTimeout(250);
-          const after=(await cell.innerText().catch(()=>'' )).trim();
-          outcomes.push({row:c.rowKey,column:c.header,value:c.value,after,ok:sameCellValue(after,c.value,c.header)});
+          let after='',committed=false;
+          const deadline=Date.now()+250;
+          do {
+            const rendered=await cell.evaluate(element=>({text:(element.innerText||'').trim(),editing:[...element.querySelectorAll('input,textarea')].some(field=>field.isConnected&&!field.disabled&&(field.getClientRects().length>0))})).catch(()=>null);
+            if(rendered){after=rendered.text;if(!rendered.editing&&sameCellValue(after,c.value,c.header)){committed=true;break;}}
+            const remaining=deadline-Date.now();if(remaining<=0)break;
+            await page.waitForTimeout(Math.min(20,remaining));
+          } while(Date.now()<=deadline);
+          outcomes.push({row:c.rowKey,column:c.header,value:c.value,after,ok:committed});
         } catch(err) { outcomes.push({row:c.rowKey,column:c.header,ok:false,reason:err?.message||'не удалось открыть/записать ячейку'}); }
         if (!outcomes.at(-1).ok) break;
       }
@@ -1121,8 +1212,13 @@ const server = http.createServer(async (req, res) => {
       const item=current().proposals.get(body.id);
       if(!item||!item.staged)throw new Error('Нет проверенного черновика для сохранения. Сначала внеси значения без сохранения.');
       if(item.sourceFingerprint){
-        const currentSource=(await tableCandidates()).find(candidate=>candidate.id===item.sourceId);
-        if(!currentSource||fingerprint(currentSource.rows)!==item.sourceFingerprint)throw new Error('DataLens изменился после заполнения черновика. Не сохранил; сними отчёт заново.');
+        if(item.sourceSnapshotRefs?.length){
+          const snapshots=current().reportSnapshots||new Map(),refs=item.sourceSnapshotRefs.map(ref=>snapshots.get(ref.id));
+          if(refs.some((snapshot,index)=>!snapshot||snapshot.sourceFingerprint!==item.sourceSnapshotRefs[index].sourceFingerprint||fingerprint(snapshot.rows)!==snapshot.sourceFingerprint)||fingerprint(item.sourceSnapshotRefs)!==item.sourceFingerprint)throw new Error('Снимок DataLens изменился или истёк. Не сохранил; сними источники заново.');
+        }else{
+          const currentSource=(await tableCandidates()).find(candidate=>candidate.id===item.sourceId);
+          if(!currentSource||fingerprint(currentSource.rows)!==item.sourceFingerprint)throw new Error('DataLens изменился после заполнения черновика. Не сохранил; сними отчёт заново.');
+        }
       }
       if(current().context.pages()[item.pageIndex]?.url()!==item.planUrl)throw new Error('Вкладка Core изменилась после заполнения черновика. Не сохранил.');
       const page=current().context.pages()[item.pageIndex];
@@ -1153,15 +1249,20 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     return send(res, 400, { error: err?.message || String(err) });
   }
+  } finally {
+    state.activeOperations = Math.max(0, state.activeOperations - 1);
+    if (state.closing && state.activeOperations === 0) for (const resolve of state.drainWaiters.splice(0)) resolve();
+  }
   });
 });
 
 async function closeSession(state) {
   const context = state.context;
-  if (!context) return;
   state.context = null;
   state.activeReport = null;
+  state.reportSnapshots?.clear();
   state.proposals.clear();
+  if (!context) return;
   const closed = await Promise.race([
     context.close().then(() => true, () => true),
     new Promise(resolve => setTimeout(() => resolve(false), 8000))
@@ -1180,6 +1281,7 @@ async function clearSessionWorkspace(state) {
   state.workbook = null;
   state.workbookFileName = null;
   state.activeReport = null;
+  state.reportSnapshots?.clear();
   state.proposals.clear();
   googleSheets.disconnect(state);
   state.smartisWorkbook = null;
@@ -1195,11 +1297,17 @@ async function clearSessionWorkspace(state) {
 const sweeper = setInterval(() => {
   const now = Date.now();
   for (const state of sessions.values()) {
-    if (state.context && now - state.lastActivity > idleBrowserMs) {
-      console.log(`Closing idle browser for ${state.username}`);
-      void closeSession(state);
-    }
+    if (!shouldSweepSession(state, now, idleBrowserMs, activeLaunches)) continue;
+    state.closing = true;
+    sessions.delete(state.id);
+    void (async () => {
+      try {
+        await clearSessionWorkspace(state);
+        fs.rmSync(state.userDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch (error) { console.warn(`Could not clean idle session workspace: ${error.message}`); }
+    })();
   }
+  for (const [key, failure] of adminLoginFailures) if (now >= Math.max(failure.until || 0, failure.expiresAt || 0)) adminLoginFailures.delete(key);
   for (const [key, entry] of authCache) if (entry.expiresAt <= now) authCache.delete(key);
 }, 60_000).unref();
 

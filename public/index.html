@@ -23,14 +23,14 @@
       <button id="connect" class="button primary"><span class="icon">↗</span> Подключить браузер</button>
     </section>
     <section id="connection" class="connection card"><div class="state-icon">◉</div><div><strong>Браузер не подключён</strong><span>Страницы Core и DataLens откроются во встроенной вкладке приложения.</span></div><span class="status-chip muted">НЕ ПОДКЛЮЧЁН</span></section>
-    <section class="browser-panel card">
-      <div class="browser-toolbar"><div><strong>Рабочий браузер</strong><small id="browser-caption">Подключи браузер, затем открой заданную ссылку</small></div><select id="browser-page" disabled aria-label="Вкладка браузера"><option>Нет открытых вкладок</option></select><button id="browser-new-tab" class="button ghost" disabled>Новая вкладка</button></div>
+    <section id="browser-panel" class="browser-panel card collapsed">
+      <div class="browser-toolbar"><div><strong>Рабочий браузер</strong><small id="browser-caption">Подключи браузер, затем открой заданную ссылку</small></div><select id="browser-page" disabled aria-label="Вкладка браузера"><option>Нет открытых вкладок</option></select><button id="browser-new-tab" class="button ghost" disabled>Новая вкладка</button><button id="browser-toggle" class="button ghost" type="button" aria-expanded="false">Развернуть экран</button><button id="browser-size" class="button ghost" type="button" aria-label="Изменить высоту экрана">Высота 380 px</button></div>
       <div id="browser-viewport" class="browser-viewport" tabindex="0" title="Нажми и используй страницу мышью и клавиатурой"><div id="browser-empty" class="browser-empty" aria-hidden="true"></div><img id="browser-image" alt="Встроенная вкладка браузера" draggable="false" hidden></div>
       <div class="browser-hint">Кликни по странице, чтобы управлять ею. Используй Ctrl+V для вставки текста из буфера обмена.</div>
     </section>
     <div class="steps">
       <section class="card step-card">
-        <div class="step-head"><span class="step-number">01</span><div><h2>План из Excel</h2><p>Выбери книгу и лист с планом</p></div></div>
+        <div class="step-head"><span class="step-number">01</span><div><h2>План из Excel</h2><p>Выбери книгу и лист с планом</p><small class="step-state" id="step-state-1"></small></div></div>
         <label class="dropzone" id="dropzone"><input id="file" type="file" accept=".xlsx"><span class="upload-icon">↑</span><strong>Перетащи файл сюда</strong><small>или выбери файл .xlsx</small><em id="file-name"></em></label>
         <div class="select-row"><label for="sheet">Лист</label><select id="sheet" disabled><option>Сначала загрузи Excel</option></select></div>
         <div class="select-row"><label for="header-row">Строка заголовков</label><input id="header-row" type="number" min="1" value="1" disabled></div>
@@ -38,16 +38,20 @@
         <button id="prepare-plan" class="button secondary full-action" disabled>Подготовить перенос плана</button>
       </section>
       <section class="card step-card">
-        <div class="step-head"><span class="step-number">02</span><div><h2>Медиаплан в Core</h2><p>Вставь точную ссылку на МП</p></div></div>
+        <div class="step-head"><span class="step-number">02</span><div><h2>Медиаплан в Core</h2><p>Вставь точную ссылку на МП</p><small class="step-state" id="step-state-2"></small></div></div>
         <div class="input-action"><input id="plan-url" type="url" placeholder="https://core.ag-media.ru/documents/mediaplans/ID/edit"><button id="open-plan" class="button secondary">Открыть</button></div>
+        <details class="mp-queue"><summary>Очередь нескольких МП</summary><small>Вставь ссылки по одной на строку. Следующий МП откроется только по отдельному нажатию после сохранения и сверки текущего.</small><textarea id="mp-queue-input" rows="3" placeholder="https://core.ag-media.ru/documents/mediaplans/3084/edit&#10;https://core.ag-media.ru/documents/mediaplans/3088/edit"></textarea><div class="queue-actions"><button id="load-mp-queue" class="button ghost" type="button">Загрузить очередь</button><button id="open-queued-mp" class="button secondary" type="button" disabled>Открыть первый МП</button></div><small id="mp-queue-status" role="status">Очередь не задана.</small></details>
         <div class="select-row"><label for="core-page">Вкладка с МП</label><select id="core-page" disabled><option>Сначала подключи браузер</option></select><button id="read-plan" class="button ghost" disabled>Считать таблицу</button></div>
         <div class="preview-mini" id="plan-preview"><span class="empty">Таблица МП появится после открытия</span></div>
       </section>
       <section class="card step-card wide">
-        <div class="step-head"><span class="step-number">03</span><div><h2>Факт из DataLens</h2><p>Необязательно: укажи точную ссылку на отчёт и фильтры сам</p></div></div>
+        <div class="step-head"><span class="step-number">03</span><div><h2>Факт из DataLens</h2><p>Необязательно: укажи точную ссылку на отчёт и фильтры сам</p><small class="step-state" id="step-state-3"></small></div></div>
         <div class="input-action report-url-row"><input id="report-url" type="url" placeholder="Ссылка на конкретный отчёт DataLens"><button id="open-report" class="button secondary">Открыть отчёт</button><button id="capture" class="button ghost" disabled>Считать таблицу</button></div>
-        <div class="filter-note"><span>i</span><div><strong>Таблица и месяц подбираются по МП</strong><small>Сопоставляем «Объект продвижения» и показатели с названиями строк МП. Если период плана определён однозначно, выставляем месяц и снимаем «Текущий месяц».</small></div></div>
+        <div class="select-row"><label for="report-source-tab">Источник</label><select id="report-source-tab"><option value="sources">Все источники</option><option value="direct">Яндекс Директ</option><option value="vk">VK ADS</option><option value="classifieds">Классифайды</option><option value="promo">Промостраницы</option></select><button id="switch-report-tab" class="button ghost" disabled>Открыть вкладку</button></div>
+        <div class="filter-note"><span>i</span><div><strong>Источники можно собрать с нескольких вкладок</strong><small>Для каждого снимка проверь вкладку и период. DataLens объекты или кампании сопоставляются с описаниями Core; неоднозначные строки и непроверяемые суммы не переносятся.</small></div></div>
         <div id="report-options" class="report-options"></div>
+        <div class="queue-actions fact-source-actions"><button id="add-fact-source" class="button ghost" type="button" disabled>Добавить выбранную таблицу в факт</button><button id="clear-fact-sources" class="button ghost" type="button" disabled>Очистить набор</button></div>
+        <div id="fact-source-list" class="preview-note" role="status">Таблицы источников можно собирать с разных вкладок DataLens.</div>
         <div class="preview-mini report-preview" id="report-preview"><span class="empty">Таблица отчёта появится здесь</span></div>
         <button id="prepare-fact" class="button secondary full-action" disabled>Подготовить перенос факта</button>
       </section>

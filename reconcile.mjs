@@ -1,5 +1,7 @@
 import { calculationModel, conversionSourceColumn, corePlacementGroup, eligiblePlanMetrics, formatCalculationColumn, isManualEntryHeader, planMetric, planPlacementGroup, planSourceNameColumn } from './public/plan-rules.js';
 import { isMissingSourceValue } from './public/numeric.js';
+import { aggregateFactRows } from './public/fact-aggregation.js';
+import { matchPromotionName, promotionColumn } from './public/report-selector.js';
 
 /**
  * Compare a saved Core table with the source-backed cells approved in a proposal.
@@ -45,8 +47,45 @@ const uniqueColumn = (headers, label) => {
 const metricForHeader = header => isManualEntryHeader(header) ? 'manualAK' : planMetric(header);
 
 function sourceNameColumn(headers, mode) {
-  if (mode === 'fact') return uniqueColumn(headers, 'Объект продвижения');
+  if (mode === 'fact') return promotionColumn(headers).index;
   return planSourceNameColumn(headers);
+}
+
+function normalizedFactSource({sourceRows,sourceHeaders,targetRows,nameCol}) {
+  const promotion=promotionColumn(sourceHeaders);
+  if(promotion.index<0)throw new Error('Не найден единственный столбец объекта, кампании или UTM Source DataLens.');
+  const expectedObjects=targetRows.slice(1).map(row=>String(row[nameCol]??'').trim()).filter(name=>name&&!/^(?:итого|всего|total)\b/i.test(name)&&!/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(name));
+  return aggregateFactRows({headers:sourceHeaders,rows:sourceRows.slice(1),nameColumn:promotion.index,nameKind:promotion.kind,expectedObjects});
+}
+
+/** Server-derived fact values, including campaign aggregation, for tamper-proof preview checks. */
+export function expectedFactValues({sourceRows,sourceHeaders,targetRows,nameCol,parseDisplayNumber,impressionsInThousands=true}) {
+  const aggregated=normalizedFactSource({sourceRows,sourceHeaders,targetRows,nameCol});
+  const targetNames=new Map();
+  for(let rowIndex=1;rowIndex<targetRows.length;rowIndex++){
+    const name=String(targetRows[rowIndex]?.[nameCol]??'').trim();if(!name||/^(?:итого|всего|total)\b/i.test(name)||/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(name))continue;
+    const key=relation(name);if(!targetNames.has(key))targetNames.set(key,[]);targetNames.get(key).push({rowIndex,name});
+  }
+  const values=new Map();
+  for(const source of aggregated.groups){
+    const targets=targetNames.get(relation(source.object))||[];
+    if(targets.length!==1)continue;
+    const target=targets[0];
+    for(let column=0;column<(targetRows[0]||[]).length;column++){
+      const header=String(targetRows[0][column]??'').trim(),metric=metricForHeader(header);
+      if(!metric||metric==='manualAK'||isManualEntryHeader(header))continue;
+      const sourceColumn=sourceMetricColumn(header,sourceHeaders,'fact');if(sourceColumn<0)continue;
+      const raw=source.row[sourceColumn];if(raw===undefined||String(raw).trim()===''||isMissingSourceValue(raw))continue;
+      let value=parseDisplayNumber(raw);if(value===null)continue;
+      if(['cr1','cr2','cr3'].includes(metric)){
+        if(String(raw).includes('%'))value/=100;
+        else if(String(sourceHeaders[sourceColumn]||'').includes('%'))continue;
+      }
+      if(metric==='impressions'&&impressionsInThousands)value/=1000;
+      values.set(`${target.rowIndex}:${column}`,String(Number(value.toFixed(6))));
+    }
+  }
+  return {values,issues:aggregated.issues};
 }
 
 function sourceMetricColumn(targetHeader, sourceHeaders, mode) {
@@ -110,11 +149,14 @@ export function expectedCheckKeys({ mode, sourceRows, sourceHeaders, headerRowIn
   if (nameSourceCol < 0 || nameCol < 0 || nameCol >= (targetRows[0] || []).length) throw new Error('Не удалось заново определить колонки названия источника и МП на сервере.');
   const targetHeaders = targetRows[0] || [];
   const calculationColumn=mode==='plan'?formatCalculationColumn(sourceHeaders):-1;
+  const factSource=mode==='fact'?normalizedFactSource({sourceRows,sourceHeaders,targetRows,nameCol}):null;
+  if(mode==='fact'&&factSource.issues.length&&!allowPartial)throw new Error(factSource.issues[0]);
+  const effectiveSourceRows=mode==='fact'?factSource.rows:sourceRows;
   const sourceStart = mode === 'plan' ? headerRowIndex + 1 : 1;
   const ignore = value => /ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i.test(value);
   const sourceByKey = new Map(), targetByKey = new Map();
-  for (let index = sourceStart; index < sourceRows.length; index++) {
-    const row = sourceRows[index] || [], name = String(row[nameSourceCol] || '').trim();
+  for (let index = sourceStart; index < effectiveSourceRows.length; index++) {
+    const row = effectiveSourceRows[index] || [], name = String(row[nameSourceCol] || '').trim();
     if (!name || /^(?:итого|всего|total)\b/i.test(name) || ignore(name)) continue;
     const sourceModel=mode==='plan'&&calculationColumn>=0?calculationModel(String(row[calculationColumn]??'').trim()):'';
     if(mode==='plan'&&calculationColumn>=0&&(!String(row[calculationColumn]??'').trim()||!sourceModel))continue;
@@ -148,7 +190,8 @@ export function expectedCheckKeys({ mode, sourceRows, sourceHeaders, headerRowIn
       if (allowPartial) continue;
       throw new Error(`Не удалось подтвердить группу и модель строки «${target.name}» в МП.`);
     }
-    const classified = /avito|domclick|домклик|cian|циан|realty|недвижим|классиф/i.test(target.name);
+    const classified = /avito|domclick|домклик|cian|циан|realty|недвижим|классиф/i.test(target.name)
+      || (mode === 'plan' && target.placement.groupKey.startsWith('classifieds|'));
     for (let column = 0; column < targetHeaders.length; column++) {
       const header = String(targetHeaders[column] || '').trim(), metric = metricForHeader(header);
       if (!metric || metric === 'manualAK' || isManualEntryHeader(header)) continue;
