@@ -1,13 +1,42 @@
 """Read cached cell values from an uploaded .xlsx using only Python's stdlib."""
 import json
+import math
 import re
 import sys
+from datetime import datetime, timedelta
 import zipfile
 import xml.etree.ElementTree as ET
 
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+DATE_FORMATS = {14, 15, 16, 17, 22}
+TIME_FORMATS = {18, 19, 20, 21, 45, 46, 47}
+
+def is_date_format(fmt_id, fmt):
+    if fmt_id in DATE_FORMATS: return True
+    if fmt_id in TIME_FORMATS or not fmt: return False
+    if "%" in fmt: return False
+    if re.search(r"\[(?:h+|m+|s+|ч+|м+|с+)\]", fmt, re.I): return False
+    cleaned = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", fmt)
+    cleaned = re.sub(r"(?:h+|s+|ч+|с+|m+|м+)\s*:\s*(?:h+|s+|ч+|с+|m+|м+)", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"[hHsSчЧсС]+", " ", cleaned)
+    has_year_or_day = re.search(r"[yYdDгГдД]+", cleaned)
+    has_month = re.search(r"[mMмМ]+", cleaned)
+    return bool(has_year_or_day or (has_month and re.search(r"[yYгГ]+", cleaned)))
+
+def excel_date(serial, date1904=False):
+    try: day = math.floor(float(serial))
+    except (TypeError, ValueError, OverflowError): return None
+    if date1904:
+        if not 0 <= day <= 100000: return None
+        return (datetime(1904, 1, 1) + timedelta(days=day)).strftime("%d.%m.%Y")
+    if day == 60: return None  # Excel's fictitious 29.02.1900; keep the raw serial.
+    if 1 <= day <= 59: base, offset = datetime(1899, 12, 31), day
+    elif 61 <= day <= 100000: base, offset = datetime(1899, 12, 30), day
+    else: return None
+    return (base + timedelta(days=offset)).strftime("%d.%m.%Y")
 
 def col_index(ref):
     letters = "".join(ch for ch in ref if ch.isalpha())
@@ -37,7 +66,7 @@ def parse(path):
                 # escaped percent signs in custom literal strings.
                 visible_format = re.sub(r'"[^"]*"|\\.', "", fmt)
                 is_percent = fmt_id in (9, 10) or "%" in visible_format
-                style_formats.append("percent" if is_percent else "number")
+                style_formats.append("percent" if is_percent else "date" if is_date_format(fmt_id, fmt) else "number")
         shared = []
         if "xl/sharedStrings.xml" in names:
             root = ET.fromstring(book.read("xl/sharedStrings.xml"))
@@ -45,6 +74,7 @@ def parse(path):
                 shared.append("".join(t.text or "" for t in item.iter(f"{{{MAIN}}}t")))
 
         workbook = ET.fromstring(book.read("xl/workbook.xml"))
+        date1904 = workbook.attrib.get("date1904", "0").lower() in ("1", "true")
         rel_root = ET.fromstring(book.read("xl/_rels/workbook.xml.rels"))
         rels = {r.attrib["Id"]: r.attrib["Target"] for r in rel_root.findall(f"{{{PKG}}}Relationship")}
         sheets = []
@@ -85,9 +115,12 @@ def parse(path):
                         text = "TRUE" if value.text == "1" else "FALSE"
                     elif value is not None:
                         text = value.text or ""
-                    cells[idx] = text
                     style_index = int(cell.attrib.get("s", "0"))
-                    cell_formats[idx] = style_formats[style_index] if style_index < len(style_formats) else "number"
+                    value_format = style_formats[style_index] if style_index < len(style_formats) else "number"
+                    if value_format == "date" and cell.attrib.get("t") not in ("s", "inlineStr", "b"):
+                        text = excel_date(text, date1904) or text
+                    cells[idx] = text
+                    cell_formats[idx] = value_format
                 row_values.append({"number": int(row.attrib.get("r", str(len(row_values) + 1))), "values": cells, "cellFormats": cell_formats})
             sheets.append({"name": sheet.attrib.get("name", "Sheet"), "rows": row_values})
         return {"sheets": sheets}

@@ -9,13 +9,14 @@ import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
 import { after, test } from 'node:test';
 import { createUserRecord, makeUserId, verifyBasicAuthorization, writeUsers } from '../auth.mjs';
-import { forceKillChromium } from '../browser-cleanup.mjs';
-import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, verifyCoreChecks } from '../reconcile.mjs';
+import { forceKillChromium, recordBrowserActivity, shouldSweepSession } from '../browser-cleanup.mjs';
+import { assertCompleteCheckCoverage, expandSpannedCells, expectedCheckKeys, expectedFactValues, verifyCoreChecks } from '../reconcile.mjs';
 import { auditIsClear, identityAlerts } from '../public/audit-status.js';
 import { relationRows } from '../public/relation-audit.js';
 import { calculationModel, conversionSourceColumn, corePlacementGroup, eligiblePlanMetrics, formatCalculationColumn, isManualEntryHeader, normalizePlanPercentage, planPlacementGroup, planSourceNameColumn, validatePlanBudget } from '../public/plan-rules.js';
 import { isMissingSourceValue, parseNumericValue } from '../public/numeric.js';
 import { inferPlanMonth, matchPromotionName, promotionColumn, rankFactTables } from '../public/report-selector.js';
+import { aggregateFactRows, combineFactSources } from '../public/fact-aggregation.js';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.AGM_PLAYWRIGHT_MODULE || 'playwright');
@@ -173,6 +174,37 @@ test('server independently rebuilds complete fact and Excel-plan check coverage'
   assert.equal(conversionSourceColumn('cr1', factHeaders, 'fact'), 2, 'DataLens CTR feeds Core CR1');
   assert.equal(conversionSourceColumn('cr2', factHeaders, 'fact'), 3, 'DataLens CR1 feeds Core CR2');
   assert.equal(conversionSourceColumn('cr3', factHeaders, 'fact'), 4, 'DataLens CR2 feeds Core CR3');
+  const campaignHeaders=['UTM Source','Расход с НДС, руб.','Показы, шт','Клики, шт','CTR, %','CR1, %','CR2, %','Все лиды, шт','Целевые лиды, шт'];
+  const campaignRows=[
+    ['spb|business|bulvar-grina|media|yandex|Бульвар Грина','100','1000','10','1%','10%','50%','1','1'],
+    ['spb|business|bulvar-grina|video|yandex|Бульвар Грина','300','3000','90','3%','10%','50%','9','5']
+  ];
+  const aggregatedCampaigns=aggregateFactRows({headers:campaignHeaders,rows:campaignRows,nameColumn:0,nameKind:'campaign',expectedObjects:['Бульвар Грина']});
+  assert.equal(aggregatedCampaigns.groups.length,1,'different DataLens campaigns for one ЖК fold into one explicit MP object');
+  assert.deepEqual(aggregatedCampaigns.rows[1].slice(1),['400','4000','100','2.5%','10%','50%','10','6']);
+  const campaignTarget=[['Описание','Бюджет, руб.','Показы, тыс.','CR1, %','Клики, шт','Все лиды, шт','Целевые лиды, шт','CR2, %','CR3, %'],['Бульвар Грина','','','','','','','','']];
+  const campaignChecks=expectedCheckKeys({mode:'fact',sourceRows:[campaignHeaders,...campaignRows],sourceHeaders:campaignHeaders,targetRows:campaignTarget,nameCol:0,placementCol:-1,parseDisplayNumber});
+  assert.deepEqual([...campaignChecks].sort(),['1:1','1:2','1:3','1:4','1:5','1:6','1:7','1:8']);
+  const campaignExpected=expectedFactValues({sourceRows:[campaignHeaders,...campaignRows],sourceHeaders:campaignHeaders,targetRows:campaignTarget,nameCol:0,parseDisplayNumber});
+  assert.equal(campaignExpected.values.get('1:1'),'400');
+  assert.equal(campaignExpected.values.get('1:2'),'4');
+  assert.equal(campaignExpected.values.get('1:3'),'0.025');
+  assert.equal(campaignExpected.values.get('1:7'),'0.1');
+  assert.equal(campaignExpected.values.get('1:8'),'0.5');
+  const ambiguousCampaign=[['UTMSource','Расход с НДС, руб.','Клики, шт'],['spb|yandex|bulvar-grina-media|main','100','10']];
+  const ambiguousTargets=[['Описание','Бюджет, руб.','Клики, шт'],['Бульвар Грина','',''],['Бульвар Грина Медиа','','']];
+  assert.throws(()=>expectedCheckKeys({mode:'fact',sourceRows:ambiguousCampaign,sourceHeaders:ambiguousCampaign[0],targetRows:ambiguousTargets,nameCol:0,placementCol:-1,parseDisplayNumber}),/название неоднозначно/i,'ambiguous UTM mapping must block a full fact check');
+  const classifiedPlanHeaders=['Описание размещения','Тип семантики/категории интересов','Рекламная площадка','Формат размещения','Формат расчетов','CPL, руб.','Прогноз Обращения, шт','Прогноз Лиды по Last Click, шт','Прогноз CR, %'];
+  const classifiedPlanRows=[classifiedPlanHeaders,['Бульвар Грина','Классифайды','Avito','','CPA','5000','2','1','#DIV/0!']];
+  const classifiedCore=[['Описание','Площадка','CPL, руб.','Все лиды, шт','Целевые лиды, шт','CR3, %'],['','Классифайды CPA','','','',''],['Бульвар Грина','','','','','']];
+  const classifiedChecks=expectedCheckKeys({mode:'plan',sourceRows:classifiedPlanRows,sourceHeaders:classifiedPlanHeaders,targetRows:classifiedCore,nameCol:0,placementCol:1,parseDisplayNumber});
+  assert.deepEqual([...classifiedChecks].sort(),['2:2','2:3','2:4'],'a classified ЖК inherits its parent CPA placement and does not require the invalid forecast CR/CR3');
+  const directTabRows=[['Название кампании','Расход с НДС, руб.','Показы, шт','Клики, шт','CTR, %','CR1, %','CR2, %','Все лиды, шт','Целевые лиды, шт'],['spb|yandex|bulvar-grina|main','100','1000','10','1%','10%','50%','1','1']];
+  const vkTabRows=[['Объект продвижения','Расход с НДС, руб.','Показы, шт','Клики, шт','CTR, %','CR1, %','CR2, %','Все лиды, шт','Целевые лиды, шт'],['Бульвар Грина','300','3000','90','3%','10%','50%','9','5']];
+  const factBundle=combineFactSources([{tabLabel:'Яндекс Директ',rows:directTabRows},{tabLabel:'VK ADS',rows:vkTabRows}],['Бульвар Грина']);
+  assert.deepEqual(factBundle.rows[1].slice(0,4),['Бульвар Грина','100','1000','10']);
+  assert.deepEqual(factBundle.rows[2].slice(0,4),['Бульвар Грина','300','3000','90']);
+  assert.equal(factBundle.issues.length,2,'missing non-required metrics are explicitly reported, not guessed');
   assert.equal(assertCompleteCheckCoverage(factKeys, new Set(factKeys)), true);
   const omittedCheck = new Set(factKeys);
   omittedCheck.delete('1:8');
@@ -249,6 +281,16 @@ test('server independently rebuilds complete fact and Excel-plan check coverage'
   assert.deepEqual([...dashKeys].sort(),['2:2','2:3','2:6','2:8','2:9'],'scientific notation remains verifiable while dash-valued metrics are excluded rather than changed to zero');
 });
 
+test('idle-session sweep skips active, launching, and closing sessions', () => {
+  const now=100_000,idle=60_000,launches=new Set();
+  const stale={id:'idle',lastActivity:0,activeOperations:0,closing:false};
+  assert.equal(shouldSweepSession(stale,now,idle,launches),true);
+  assert.equal(shouldSweepSession({...stale,activeOperations:1},now,idle,launches),false);
+  launches.add('idle');assert.equal(shouldSweepSession(stale,now,idle,launches),false);launches.clear();
+  assert.equal(shouldSweepSession({...stale,closing:true},now,idle,launches),false);
+  assert.equal(shouldSweepSession({...stale,lastActivity:now-idle},now,idle,launches),false,'the exact idle timeout boundary is retained');
+});
+
 test('DataLens fact table selection follows exact MP objects and infers only an unambiguous calendar month', () => {
   const candidates=[
     {id:'campaigns',rows:[['Кампания','Расход','Клики'],['Бульвар Грина','12','4']]},
@@ -311,6 +353,19 @@ test('separate headless Chromium opens a fixture, reads DOM and interacts', asyn
   } finally { await context.close(); }
 });
 
+test('background polling does not reset the idle browser deadline', () => {
+  const state = { lastActivity: 1000 };
+  for (const url of ['/api/state', '/api/browser-snapshot?pageIndex=0', '/public/app.js', '/api/unknown']) {
+    recordBrowserActivity(state, url, 61 * 60 * 1000);
+  }
+  assert.equal(state.lastActivity, 1000, 'an open but unused UI must still allow idle cleanup');
+  for (const url of ['/api/connect', '/api/browser-action', '/api/read-plan', '/api/capture', '/api/apply', '/api/save']) {
+    state.lastActivity = 1000;
+    recordBrowserActivity(state, url, 5000);
+    assert.equal(state.lastActivity, 5000, `${url} must keep an active browser alive`);
+  }
+});
+
 test('stuck Chromium can be terminated by its isolated profile path', async () => {
   const profile = path.join(tempRoot, 'stuck-browser-profile');
   const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 800, height: 600 } });
@@ -335,6 +390,28 @@ test('Python stdlib Excel reader parses an isolated generated workbook', () => {
   assert.equal(parsed.sheets[0].name, 'Smoke');
   assert.deepEqual(parsed.sheets[0].rows[1].values.slice(0, 2), ['Тестовая строка', '1250.5']);
   assert.equal(parsed.sheets[0].rows[1].cellFormats[2],'percent','Excel percent number formats must survive parsing');
+});
+
+test('Excel date formats convert serial dates with 1900 and 1904 epochs, leaving time formats numeric', () => {
+  const pythonEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+  const readBook = (name, epoch='1900') => {
+    const workbook = path.join(tempRoot, name);
+    const create = spawnSync(python, ['test/fixtures/make_xlsx_dates.py', workbook, ...(epoch==='1904'?['1904']:[])], { encoding: 'utf8', env: pythonEnv });
+    assert.equal(create.status, 0, create.stderr || create.stdout);
+    const parse = spawnSync(python, ['parse_xlsx.py', workbook], { encoding: 'utf8', env: pythonEnv });
+    assert.equal(parse.status, 0, parse.stderr || parse.stdout);
+    return JSON.parse(parse.stdout).sheets[0].rows[0];
+  };
+  const standard = readBook('dates-1900.xlsx');
+  assert.deepEqual(standard.values.slice(0, 5), ['01.01.1900','28.02.1900','60','01.03.1900','01.10.2026']);
+  assert.equal(standard.values[11], '01.10.2026', 'custom date-time formats use the floored serial day');
+  assert.equal(standard.values[12], '46296', 'custom duration-time formats stay numeric');
+  assert.equal(standard.cellFormats[4], 'date');
+  assert.equal(inferPlanMonth(standard.values)?.start, '01.10.2026', 'the converted Excel serial should identify its month');
+  assert.deepEqual(standard.cellFormats.slice(6, 13), ['number','number','number','number','number','date','number']);
+  const mac = readBook('dates-1904.xlsx', '1904');
+  assert.equal(mac.values[0], '01.01.1904');
+  assert.equal(mac.cellFormats[11], 'date');
 });
 
 test('hashed credentials validate and user storage keys do not collide', async () => {
@@ -400,8 +477,9 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
   const tokenMatch = pageHtml.match(/name="agm-token" content="([^"]+)"/);
   assert.ok(tokenMatch);
   const invalidTolerance = await fetch(`${base}/api/prepare-apply`, { method: 'POST', headers: { ...clients[0], Origin: 'https://app.example.test', 'X-AGM-Token': tokenMatch[1], 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'plan', amountTolerance: 11 }) });
-  assert.equal(invalidTolerance.status, 400);
-  assert.match((await invalidTolerance.json()).error, /от 1 до 10/);
+  const invalidToleranceText=await invalidTolerance.text();
+  assert.equal(invalidTolerance.status, 400, `${invalidToleranceText}\n${output}`);
+  assert.match(JSON.parse(invalidToleranceText).error, /от 1 до 10/);
   const apiHeaders = { ...clients[0], 'X-AGM-Token': tokenMatch[1], 'Content-Type': 'application/octet-stream', 'X-File-Name': 'smoke.xlsx' };
   const upload = await fetch(`${base}/api/workbook`, { method: 'POST', headers: { ...apiHeaders, Origin: 'https://app.example.test' }, body: fs.readFileSync(workbook) });
   assert.equal(upload.status, 200, await upload.text());
@@ -555,10 +633,19 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
   assert.equal(stalePrepared.changes.length, factChanges.length);
   const mutateSource = await fetch(`${base}/api/browser-action`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage, action: 'click', x: 80, y: 20 }) });
   assert.equal(mutateSource.status, 200, mutateSource.status === 200 ? '' : await mutateSource.text());
-  const mutatedCapture = await fetch(`${base}/api/capture`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage }) });
-  const mutatedCaptureText = await mutatedCapture.text();
-  assert.equal(mutatedCapture.status, 200, mutatedCaptureText);
-  assert.equal(JSON.parse(mutatedCaptureText).candidates.find(candidate=>candidate.id===captured.selectedId)?.rows[1][1], '120001', 'the fixture click must alter the embedded DataLens source');
+  // The fixture uses cross-frame postMessage: mouse dispatch can complete before
+  // the iframe handles the message, especially on a fast headless Linux runner.
+  let mutatedValue;
+  const mutationDeadline = Date.now() + 5000;
+  do {
+    const mutatedCapture = await fetch(`${base}/api/capture`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ pageIndex: reportPage.activePage }) });
+    const mutatedCaptureText = await mutatedCapture.text();
+    assert.equal(mutatedCapture.status, 200, mutatedCaptureText);
+    mutatedValue = JSON.parse(mutatedCaptureText).candidates.find(candidate=>candidate.id===captured.selectedId)?.rows[1][1];
+    if (mutatedValue === '120001') break;
+    await delay(100);
+  } while (Date.now() < mutationDeadline);
+  assert.equal(mutatedValue, '120001', 'the fixture click must alter the embedded DataLens source');
   const staleApply = await fetch(`${base}/api/apply`, { method: 'POST', headers: appJsonHeaders, body: JSON.stringify({ id: stalePrepared.id }) });
   assert.equal(staleApply.status, 400);
   assert.match((await staleApply.json()).error, /DataLens изменился после предпросмотра/i);
@@ -608,6 +695,8 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
     const pageErrors = [];
     uiPage.on('pageerror', error => pageErrors.push(error.message));
     await uiPage.goto(base, { waitUntil: 'domcontentloaded' });
+    assert.equal(await uiPage.locator('#browser-panel').evaluate(el=>el.classList.contains('collapsed')),true,'the browser panel starts compact before connection');
+    assert.equal(await uiPage.locator('#browser-viewport').evaluate(el=>getComputedStyle(el).display),'none');
     assert.equal(await uiPage.locator('.rule input[type="checkbox"]:visible').count(), 0, 'fixed rules should not look like editable checkboxes');
     assert.equal(await uiPage.locator('.rule-status').count(), 5);
     assert.equal(await uiPage.locator('#amount-tolerance').isEditable(), true);
@@ -618,8 +707,16 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
     assert.notEqual(await uiPage.locator('html').getAttribute('data-theme'), beforeTheme, 'theme toggle must update the page theme');
     await uiPage.locator('#connect').click();
     await uiPage.waitForFunction(() => document.querySelector('#connection strong')?.textContent === 'Браузер подключён');
+    assert.equal(await uiPage.locator('#browser-panel').evaluate(el=>el.classList.contains('collapsed')),false,'connecting expands the browser viewport');
+    await uiPage.locator('#browser-size').click();
+    assert.equal(await uiPage.locator('#browser-size').innerText(),'Высота 680 px');
+    await uiPage.locator('#browser-toggle').click();
+    assert.equal(await uiPage.locator('#browser-viewport').evaluate(el=>getComputedStyle(el).display),'none');
+    await uiPage.locator('#browser-toggle').click();
     assert.deepEqual(pageErrors, [], 'application UI must initialize without JavaScript errors');
     await uiPage.locator('#file').setInputFiles(planWorkbook);
+    await uiPage.locator('#excel-preview table').waitFor({ state: 'visible' });
+    assert.match(await uiPage.locator('#step-state-1').innerText(),/строк/);
     await uiPage.locator('#plan-url').fill('https://core.ag-media.ru/documents/mediaplans/999/edit');
     await uiPage.locator('#open-plan').click();
     await uiPage.locator('#read-plan').click();
@@ -627,6 +724,12 @@ test('standalone server isolates users and completes Excel and DataLens fact flo
     await uiPage.locator('#prepare-plan').click();
     await uiPage.locator('#apply-proposal').waitFor({ state: 'visible', timeout: 5000 }).catch(async error => { throw new Error(`Plan preview did not render: toast=${await uiPage.locator('#toast').innerText().catch(()=>'<no toast>')}\n${await uiPage.locator('#audit-results').innerText().catch(()=>'<no preview>')}\n${error.message}`); });
     assert.match(await uiPage.locator('#audit-results').innerText(), /В МП есть строки без соответствия в источнике.*ЖК Бета.*останутся без изменений/s);
+    assert.equal(await uiPage.locator('.status-filter').count(),4);
+    await uiPage.locator('.status-filter[data-status="ready"]').click();
+    assert.equal(await uiPage.locator('.status-filter[data-status="ready"]').getAttribute('aria-pressed'),'true');
+    await uiPage.locator('.status-filter[data-status="ready"]').click();
+    assert.ok(await uiPage.locator('#audit').evaluate(el=>getComputedStyle(el).scrollMarginTop!=='0px'));
+    assert.ok(await uiPage.locator('.diff-old').count()>0);
     assert.equal(await uiPage.locator('#approve-save').count(), 0, 'save approval must not appear before the form is staged');
     const partialButton=uiPage.locator('#apply-partial');
     const actionButton=await partialButton.count()?partialButton:uiPage.locator('#apply-proposal');

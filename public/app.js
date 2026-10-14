@@ -4,12 +4,18 @@ import { auditIsClear, identityAlerts } from './audit-status.js';
 import { calculationModel, conversionSourceColumn, corePlacementGroup, eligiblePlanMetrics, formatCalculationColumn, isManualEntryHeader, normalizePlanPercentage, planPlacementGroup, planSourceNameColumn, validatePlanBudget } from './plan-rules.js';
 import { isMissingSourceValue, parseNumericValue } from './numeric.js';
 import { inferPlanMonth, matchPromotionName } from './report-selector.js';
+import { aggregateFactRows, combineFactSources } from './fact-aggregation.js';
 
 const $ = id => document.getElementById(id);
 let sheets = [], selectedSheet = null, reportTables = [], selectedReport = null, coreTable = null, workbookName = '';
 let latestProposal = null;
 let activeBrowserPage = 0, browserPages = [], snapshotBusy = false;
+let browserCollapsed=true,browserHeight=380;
+let planOpening = false;
+let mediaplanQueue = [], mediaplanQueueIndex = -1, mediaplanQueueCanAdvance = true;
+let factSources=[];
 let adminFeedbackLoaded = false;
+let smartisWorkbook = null, smartisTarget = null, smartisPreview = null;
 const headerTerms = ['площад', 'назван', 'кампан', 'описан', 'расход', 'бюджет', 'клик', 'показ', 'лид', 'цель', 'cr1', 'cpc', 'cpm', 'cpl'];
 
 function setTheme(theme) {
@@ -23,6 +29,18 @@ function setTheme(theme) {
     button.innerHTML = dark ? '<span aria-hidden="true">☀</span> Светлая тема' : '<span aria-hidden="true">☾</span> Чёрная тема';
   }
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#101014' : '#ffffff');
+}
+function setBrowserCollapsed(collapsed){
+  browserCollapsed=!!collapsed;
+  $('browser-panel')?.classList.toggle('collapsed',browserCollapsed);
+  const button=$('browser-toggle');
+  if(button){button.textContent=browserCollapsed?'Развернуть экран':'Свернуть экран';button.setAttribute('aria-expanded',String(!browserCollapsed));}
+}
+async function withBusy(button,busyText,action){
+  const original=button.innerHTML,wasDisabled=button.disabled;
+  button.disabled=true;button.textContent=busyText;button.classList.add('busy');
+  try{return await action();}
+  finally{button.innerHTML=original;button.classList.remove('busy');button.disabled=wasDisabled;updateActionButtons();}
 }
 let savedTheme = 'dark';
 try { savedTheme = localStorage.getItem('agm-theme') || 'dark'; } catch { /* Keep the default theme if storage is unavailable. */ }
@@ -61,17 +79,24 @@ function toast(text) { const el = $('toast'); el.textContent = text; el.classLis
 function amountToleranceValue(){const raw=$('amount-tolerance').value,value=raw.trim()===''?10:Number(raw);return Number.isFinite(value)?Math.min(10,Math.max(1,Math.round(value))):10;}
 function normalizeAmountTolerance(){const value=amountToleranceValue();$('amount-tolerance').value=String(value);return value;}
 function setConnection(connected, pages = []) {
+  const wasConnected=browserPages.length>0;
   browserPages = pages;
+  if(connected&&!wasConnected&&browserCollapsed)setBrowserCollapsed(false);
+  if(!connected)setBrowserCollapsed(true);
   const box = $('connection');
   const needsLogin=pages.some(p=>{let pathName='';try{pathName=new URL(p.url).pathname.toLowerCase();}catch{}return pathName==='/login'||/нужен вход|sign in|log in/i.test(p.title||'');});
   box.querySelector('strong').textContent = connected ? 'Браузер подключён' : 'Браузер не подключён';
   box.querySelector('div:nth-child(2) span').textContent = !connected ? 'Страницы Core и DataLens появятся во встроенной панели ниже.' : needsLogin ? 'Открыта форма входа. Авторизуйся на сайте; вход сбросится при обновлении План-контроля.' : 'Страницы и вход в сервисы доступны во встроенной панели до обновления План-контроля.';
   const chip = box.querySelector('.status-chip'); chip.textContent = !connected ? 'НЕ ПОДКЛЮЧЁН' : needsLogin ? 'НУЖЕН ВХОД' : 'ПОДКЛЮЧЁН'; chip.className = `status-chip ${!connected?'muted':needsLogin?'warn':'ok'}`;
   ['capture','read-plan'].forEach(id => $(id).disabled = !connected);
+  $('switch-report-tab').disabled = !connected;
+  if (planOpening) $('read-plan').disabled = true;
   const select = $('core-page');
+  const selectedCorePage = select.value;
   select.innerHTML = pages.length ? pages.map(p => { let host='about:blank'; try{host=new URL(p.url).hostname;}catch{} return `<option value="${p.i}">${esc(p.title || p.url)} · ${esc(host)}</option>`; }).join('') : '<option>Нет открытых вкладок</option>';
   select.disabled = !pages.length;
-  if (!pages.some(p=>p.i===Number(select.value)) && pages.length) select.selectedIndex=0;
+  if (pages.some(p => String(p.i) === selectedCorePage)) select.value = selectedCorePage;
+  else if (pages.length) select.selectedIndex = 0;
   const browserSelect=$('browser-page');
   browserSelect.innerHTML=pages.length?pages.map(p=>{let host='';try{host=new URL(p.url).hostname}catch{}return `<option value="${p.i}">${esc(p.title||host||p.url)} · ${esc(host)}</option>`}).join(''):'<option>Нет открытых вкладок</option>';
   browserSelect.disabled=!pages.length;
@@ -107,7 +132,7 @@ async function loadSheet(i) {
 }
 function miniTable(rows) {
   if (!rows?.length) return '<span class="empty">Нет строк для показа</span>';
-  const max = Math.min(12, Math.max(...rows.map(r=>r.length)));
+  const max = Math.max(...rows.map(r=>r.length));
   return `<table class="mini-table"><tbody>${rows.map((r,i)=>`<tr>${Array.from({length:max},(_,j)=>`<${i===0?'th':'td'}>${esc(r[j]||'')}</${i===0?'th':'td'}>`).join('')}</tr>`).join('')}</tbody></table>`;
 }
 function findMetric(headers, metric) {
@@ -160,9 +185,22 @@ function datasetForSheet() {
   return { headers, rows: validRows(rows.map(r=>r.values), h, n), headerIndex:h, title:`Excel · ${selectedSheet.name}` };
 }
 function datasetForReport() {
-  if (!selectedReport?.rows?.length) return null;
-  const rows=selectedReport.rows, headers=rows[0]||[], h=findMetric(headers,'name');
-  return {headers,rows:validRows(rows,0,h),headerIndex:0,title:'DataLens'};
+  let rows,headers,h,nameKind,truncated=false,preIssues=[],provenanceRows;
+  if(factSources.length){
+    const combined=combineFactSources(factSources,planObjectsForReport());rows=combined.rows;provenanceRows=rows;headers=combined.headers;h=0;nameKind='object';truncated=factSources.some(source=>source.truncated);preIssues=combined.issues;
+  }else{
+    if(!selectedReport?.rows?.length)return null;
+    rows=selectedReport.rows;provenanceRows=rows;headers=rows[0]||[];h=selectedReport.nameColumn??findMetric(headers,'name');nameKind=selectedReport.nameKind||'object';truncated=selectedReport.truncated===true;
+  }
+  const sourceRows=validRows(rows,0,h),expectedObjects=planObjectsForReport();
+  const aggregated=aggregateFactRows({headers,rows:sourceRows,nameColumn:h,nameKind,expectedObjects});
+  const sourceRowByAggregate=new Map(),sourceIndexByAggregate=new Map();
+  aggregated.groups.forEach((group,index)=>{
+    const aggregateRow=aggregated.rows[index+1],sourceRow=sourceRows[group.sourceRows[0]];
+    sourceRowByAggregate.set(aggregateRow,sourceRow);
+    sourceIndexByAggregate.set(aggregateRow,provenanceRows.indexOf(sourceRow));
+  });
+  return {headers,rows:aggregated.rows.slice(1),headerIndex:0,title:'DataLens',nameColumn:h,nameKind,truncated,aggregationIssues:[...preIssues,...aggregated.issues],sourceRowByAggregate,sourceIndexByAggregate};
 }
 function datasetForCore() {
   if (!coreTable?.table?.rows?.length) return null;
@@ -171,9 +209,9 @@ function datasetForCore() {
 }
 function objectRelation(dl, core) {
   if(!dl||!core)return {state:'нет источников',rows:[]};
-  const di=selectedReport?.nameColumn??exactColumn(dl.headers,'Объект продвижения'), ci=exactColumn(core.headers,'Описание');
+  const di=dl.nameColumn??selectedReport?.nameColumn??exactColumn(dl.headers,'Объект продвижения'), ci=exactColumn(core.headers,'Описание');
   if(di<0||ci<0)return {state:'нет колонок',rows:[],di,ci};
-  const kind=selectedReport?.nameKind||'object';
+  const kind=dl.nameKind||selectedReport?.nameKind||'object';
   const expected=core.rows.slice(1).map(row=>String(row[ci]||'').trim()).filter(Boolean);
   const resolvedRows=dl.rows.map(row=>{const match=matchPromotionName(row[di],expected,kind);return match.status==='matched'?row.map((value,index)=>index===di?match.value:value):row;});
   const rows=relationRows(resolvedRows,di,core.rows,ci,relationKey,kind==='campaign'?'DataLens кампании':'DataLens объект продвижения','МП описание');
@@ -225,7 +263,11 @@ function runAudit() {
 }
 function updateActionButtons(){
   $('prepare-plan').disabled=!(selectedSheet&&coreTable);
-  $('prepare-fact').disabled=!(selectedReport&&coreTable);
+  $('prepare-fact').disabled=!((selectedReport||factSources.length)&&coreTable);
+  $('add-fact-source').disabled=!selectedReport;
+  $('clear-fact-sources').disabled=!factSources.length;
+  const states=[selectedSheet?`${sheets[Number($('sheet').value)]?.name||'Лист'} · ${selectedSheet.rows.length} строк`:'Ждёт файл',coreTable?`МП считан · ${coreTable.table.rows.length} строк`:'Вкладка не считана',(selectedReport||factSources.length)?`DataLens · ${factSources.length?factSources.length+' таблиц':selectedReport.rows.length-1+' строк'}`:'Не считан'];
+  states.forEach((label,index)=>{const badge=$(`step-state-${index+1}`),number=badge?.closest('.step-head')?.querySelector('.step-number');if(badge)badge.textContent=label;if(number)number.classList.toggle('complete',index===0?!!selectedSheet:index===1?!!coreTable:!!(selectedReport||factSources.length));});
 }
 function headerMetric(header){
   const h=ntext(header);
@@ -294,7 +336,7 @@ function planCoreContext(rows,rowIndex,descriptionIndex,placementIndex){
 function makeProposal(mode){
   const src=mode==='fact'?datasetForReport():datasetForSheet(), dst=datasetForCore();
   if(!src||!dst) throw new Error('Нужны источник и считанная таблица МП.');
-  const sName=mode==='fact'?(selectedReport?.nameColumn??exactColumn(src.headers,'Объект продвижения')):findMetric(src.headers,'name');
+  const sName=mode==='fact'?(src.nameColumn??selectedReport?.nameColumn??exactColumn(src.headers,'Объект продвижения')):findMetric(src.headers,'name');
   const tName=mode==='fact'?exactColumn(dst.headers,'Описание'):findMetric(dst.headers,'name');
   if(sName<0||tName<0) throw new Error(mode==='fact'?'Для факта нужны однозначные колонки DataLens «Объект продвижения» и МП «Описание». Перенос остановлен.':'Не нашёл колонку с названием строки. Остановил перенос, чтобы не спутать размещения.');
   const sourceByName=new Map(), targetByName=new Map(), ignored=/ad\s?river|bot\s?(?:factor|faqtor)|бот\s?фактор/i, issues=[], missingMappings=new Set();
@@ -319,8 +361,8 @@ function makeProposal(mode){
     const group=mode==='plan'?planSourceGroup(src.headers,row):'';
     if(mode==='plan'&&!group){issues.push(`${name}: не удалось однозначно определить площадку, формат и модель размещения в Excel.`);rowStatuses.set(i,{source:name,target:'—',group:'',model:'',status:'review',reason:'Не подтверждены площадка, формат и модель.'});return;}
     let matchName=name;
-    if(mode==='fact'&&selectedReport?.nameKind==='campaign'){
-      const resolved=matchPromotionName(name,expectedFactObjects,'campaign');
+    if(mode==='fact'&&src.nameKind==='campaign'){
+      const resolved=matchPromotionName(name,expectedFactObjects,src.nameKind);
       if(resolved.status==='ambiguous'){issues.push(`${name}: кампания совпала с несколькими описаниями МП (${resolved.candidates.join(', ')}); строка оставлена без изменений.`);partialBlocked=true;return;}
       if(resolved.status==='missing'){issues.push(`${name}: кампания не сопоставилась ни с одним описанием МП; строка оставлена без изменений.`);return;}
       matchName=resolved.value;
@@ -332,7 +374,7 @@ function makeProposal(mode){
     const fullRowIndex=coreTable.table.rows.indexOf(row), context=mode==='plan'?planCoreContext(coreTable.table.rows,fullRowIndex,tName,corePlacement):null, group=context?.groupKey||'';
     const key=mode==='fact'?relationKey(name):`${group}|${relationKey(name)}`; if(!targetByName.has(key))targetByName.set(key,[]); targetByName.get(key).push({row,i,name,group,model:context?.model||'',groupLabel:context?.label||''});
   });
-  if(mode==='fact'&&selectedReport?.truncated){issues.push('Таблица DataLens достигла лимита чтения 3000 строк; сузь фильтр отчёта, чтобы не внести неполные данные.');partialBlocked=true;}
+  if(mode==='fact'&&src.truncated){issues.push('Одна из таблиц DataLens достигла лимита чтения 3000 строк; сузь фильтр отчёта, чтобы не внести неполные данные.');partialBlocked=true;}
   const sourceNames=[...sourceByName.entries()];
   for(const [key,srcItems] of sourceNames){
     const dstItems=targetByName.get(key)||[];
@@ -341,7 +383,7 @@ function makeProposal(mode){
     const s=srcItems[0], t=dstItems[0], fullRowIndex=coreTable.table.rows.indexOf(t.row);
     const model=mode==='plan'?t.model:'';
     if(mode==='plan'&&(!t.group||!model)){issues.push(`${t.name}: в МП не удалось определить родительскую группу и модель расчёта; перенос остановлен для этой строки.`);rowStatuses.set(s.i,{source:s.name,target:t.name,group:s.group,model:'',status:'review',reason:'Модель или группа Core не подтверждена.'});continue;}
-    const rowStatus={source:s.name,target:t.name,group:s.group,model,status:'ready',reason:'Сопоставление подтверждено',budgetCheck:null};
+    const rowStatus={source:s.name,target:t.name,group:s.group,model,status:'ready',reason:mode==='fact'&&src.aggregationIssues?.length?'Кампании сведены; смотри предупреждения агрегации.':'Сопоставление подтверждено',budgetCheck:null};
     rowStatuses.set(s.i,rowStatus);
     const classified=/avito|domclick|домклик|cian|циан|realty|недвижим|классиф/i.test(t.name)||s.group.startsWith('classifieds|');
     for(let colIndex=0;colIndex<dst.headers.length;colIndex++){
@@ -385,13 +427,17 @@ function makeProposal(mode){
       if(mode==='plan'&&metric==='clicks')value=Math.round(value);
       const old=String(t.row[colIndex]||'').trim();
       const newValue=String(Number(value.toFixed(6)));
-      const sourceRowIndex=mode==='fact'?selectedReport.rows.findIndex(row=>row===s.row):selectedSheet.rows.findIndex(row=>row.values===s.row);
-      rowStatus.sourceRowIndex=sourceRowIndex;
-      checks.push({rowIndex:fullRowIndex,colIndex,rowKey:t.name,value:newValue,header,sourceRowIndex,sourceColIndex:sourceIdx,sourceNameCol:sName,sourceRowKey:s.name,sourceHeader:String(src.headers[sourceIdx]||''),sourceNameHeader:String(src.headers[sName]||''),sourceValue:String(raw)});
+      const proposalRowIndex=s.i;
+      const originalSourceRow=mode==='fact'?(src.sourceRowByAggregate?.get(s.row)||s.row):s.row;
+      const sourceRowIndex=mode==='fact'?(src.sourceIndexByAggregate?.get(s.row)??selectedReport.rows.findIndex(row=>row===s.row)):selectedSheet.rows.findIndex(row=>row.values===s.row);
+      const sourceRowKey=mode==='fact'?String(originalSourceRow[sName]||'').trim():s.name;
+      const sourceValue=mode==='fact'?String(originalSourceRow[sourceIdx]??''):String(raw);
+      rowStatus.sourceRowIndex=proposalRowIndex;
+      checks.push({rowIndex:fullRowIndex,colIndex,rowKey:t.name,value:newValue,header,sourceRowIndex,sourceGroupIndex:proposalRowIndex,sourceColIndex:sourceIdx,sourceNameCol:sName,sourceRowKey,sourceHeader:String(src.headers[sourceIdx]||''),sourceNameHeader:String(src.headers[sName]||''),sourceValue});
       if(derivedBudgetCheck)continue;
       if(mode==='plan'&&metric==='clicks')continue;
       if(displayedValueMatches(header,old,newValue))continue;
-      changes.push({rowIndex:fullRowIndex,colIndex,rowKey:t.name,value:newValue,oldValue:old,header,sourceValue:String(raw),sourceRowKey:s.name,sourceHeader:src.headers[sourceIdx],sourceNameHeader:src.headers[sName],sourceRowIndex});
+      changes.push({rowIndex:fullRowIndex,colIndex,rowKey:t.name,value:newValue,oldValue:old,header,sourceValue,sourceRowKey,sourceHeader:src.headers[sourceIdx],sourceNameHeader:src.headers[sName],sourceRowIndex,sourceGroupIndex:proposalRowIndex});
     }
     if(mode==='plan'){
       const findUnique=(matcher)=>{const cols=src.headers.map((header,index)=>matcher(ntext(header))?index:-1).filter(index=>index>=0);return cols.length===1?cols[0]:-1;};
@@ -417,6 +463,7 @@ function makeProposal(mode){
     }
   }
   if(skippedSourceValues.size){const examples=[...skippedSourceValues].slice(0,6);warnings.push(`В источнике прочерки, null или ошибки формул Excel (например, #DIV/0!) в ${skippedSourceValues.size} ячейках; только эти показатели пропущены, остальные корректные значения можно внести: ${examples.join(', ')}${skippedSourceValues.size>examples.length?'…':''}.`);}
+  if(mode==='fact'&&src.aggregationIssues?.length)warnings.push(...src.aggregationIssues);
   const sourceObjectKeys=new Set([...sourceByName.values()].flat().map(item=>relationKey(item.name)));
   const untouchedRows=[...targetByName.values()].flat().filter(item=>!sourceObjectKeys.has(relationKey(item.name)));
   if(untouchedRows.length){
@@ -432,7 +479,12 @@ function makeProposal(mode){
 function showProposal(mode){
   let p;try{p=makeProposal(mode);}catch(e){toast(e.message);return;}
   latestProposal=p;
-  const previewRows=p.changes.slice(0,2500).map(c=>`<tr><td>${esc(c.rowKey)}</td><td>${esc(c.header)}</td><td>${esc(c.oldValue||'—')} → <b>${esc(c.value)}</b></td></tr>`).join('');
+  const changes=p.changes.slice(0,2500);let previewRows='';
+  for(let i=0;i<changes.length;i++){
+    const c=changes[i],start=i===0||changes[i-1].rowKey!==c.rowKey;
+    let span=0;if(start){for(let j=i;j<changes.length&&changes[j].rowKey===c.rowKey;j++)span++;}
+    previewRows+=`<tr class="diff-row${start?' diff-group-start':''}">${start?`<td rowspan="${span}" class="diff-row-name">${esc(c.rowKey)}</td>`:''}<td>${esc(c.header)}</td><td><span class="diff-old">${esc(c.oldValue||'—')}</span><span class="diff-arrow">→</span><b>${esc(c.value)}</b></td></tr>`;
+  }
   const noChanges=p.changes.length===0&&p.issues.length===1&&p.issues[0].startsWith('Нет значений для изменения:');
   const blocked=p.issues.length>0&&!noChanges;
   const visibleIssues=p.issues.filter(x=>!noChanges);
@@ -440,25 +492,27 @@ function showProposal(mode){
   const partialAvailable=blocked&&!p.partialBlocked&&p.changes.length>0&&p.changes.length<=2500;
   const stateNote=noChanges?(p.warnings.length?'Все однозначно сопоставленные поля уже совпадают; есть пропуски в предупреждениях.':'Уже совпадает: все поддерживаемые поля сверены с источником; изменений для записи нет.'):'Сначала значения будут внесены в форму Core без сохранения. Затем проверь черновик и отдельно подтверди кнопку «Сохранить».';
   const statusCounts={ready:0,partial:0,review:0,skipped:0};for(const row of p.rowResults||[])statusCounts[row.status]=(statusCounts[row.status]||0)+1;
-  const statusMarkup=mode==='plan'?`<div class="plan-status-counts"><span>Готово к внесению: ${statusCounts.ready}</span><span>Частично готово: ${statusCounts.partial}</span><span>Требуется проверка: ${statusCounts.review}</span><span>Пропущено: ${statusCounts.skipped}</span></div><div class="table-wrap"><table class="mini-table"><thead><tr><th>Строка Excel → размещение Core</th><th>Модель</th><th>Статус / проверка бюджета</th></tr></thead><tbody>${(p.rowResults||[]).map(row=>`<tr><td>${esc(row.source)} → ${esc(row.target)}</td><td>${esc(row.model||'—')}</td><td>${esc(row.reason||'Сопоставление подтверждено')}${row.budgetCheck?.expected!=null?` · расчёт ${row.budgetCheck.expected.toFixed(2)} ₽ / Excel ${row.budgetCheck.actual.toFixed(2)} ₽ / Δ ${row.budgetCheck.difference.toFixed(2)} ₽`:` · Excel: цена ${row.budgetCheck?.inputs?.price??'—'} (${esc(row.budgetCheck?.sourceHeaders?.price||'нет колонки')}), показы ${row.budgetCheck?.inputs?.impressions??'—'}, бюджет ${row.budgetCheck?.inputs?.sourceBudget??'—'}`}</td></tr>`).join('')||'<tr><td colspan="3">Нет строк для классификации</td></tr>'}</tbody></table></div>`:'';
+  const statusLabel={ready:'Готово',partial:'Частично',review:'Проверка',skipped:'Пропущено'};
+  const statusMarkup=mode==='plan'?`<div class="plan-status-counts">${[['ready','Готово к внесению'],['partial','Частично готово'],['review','Требуется проверка'],['skipped','Пропущено']].map(([key,label])=>`<button type="button" class="status-filter" data-status="${key}" aria-pressed="false">${label}: ${statusCounts[key]}</button>`).join('')}</div><div class="table-wrap"><table class="mini-table"><thead><tr><th>Строка Excel → размещение Core</th><th>Модель</th><th>Статус / проверка бюджета</th></tr></thead><tbody>${(p.rowResults||[]).map(row=>`<tr class="plan-result-row status-${esc(row.status||'skipped')}" data-status="${esc(row.status||'skipped')}"><td>${esc(row.source)} → ${esc(row.target)}</td><td>${esc(row.model||'—')}</td><td><span class="row-status ${esc(row.status||'skipped')}">${statusLabel[row.status]||'Пропущено'}</span> ${esc(row.reason||'Сопоставление подтверждено')}${row.budgetCheck?.expected!=null?` · расчёт ${row.budgetCheck.expected.toFixed(2)} ₽ / Excel ${row.budgetCheck.actual.toFixed(2)} ₽ / Δ ${row.budgetCheck.difference.toFixed(2)} ₽`:` · Excel: цена ${row.budgetCheck?.inputs?.price??'—'} (${esc(row.budgetCheck?.sourceHeaders?.price||'нет колонки')}), показы ${row.budgetCheck?.inputs?.impressions??'—'}, бюджет ${row.budgetCheck?.inputs?.sourceBudget??'—'}`}</td></tr>`).join('')||'<tr><td colspan="3">Нет строк для классификации</td></tr>'}</tbody></table></div>`:'';
   $('audit-results').innerHTML=`<div class="proposal-head"><div><strong>${mode==='fact'?'Перенос факта':'Перенос плана'} · ${esc(p.sourceTitle)}</strong><small>Точных строк: ${p.matched} из ${p.sourceRows} · Ячеек к внесению: ${p.changes.length} · Ячеек к проверке после сохранения: ${p.checks.length}${p.changes.length>2500?' (перенос заблокирован)':''}</small></div><div class="proposal-actions"><button id="apply-proposal" class="button primary" ${!p.changes.length||blocked?'disabled':''}>Внести поля без сохранения</button>${partialAvailable?`<button id="apply-partial" class="button secondary">Внести ${p.changes.length} проверенных · пропустить проблемные</button>`:''}</div></div>${statusMarkup}${partialAvailable?'<p class="partial-note">Внесутся только ячейки строк со статусом «Готово» или «Частично готово». Неоднозначные строки и строки с несходящимся бюджетом будут пропущены. Сохранение требует отдельного подтверждения.</p>':''}${alertItems.length?`<ul class="alert-list">${alertItems.join('')}</ul>`:`<ul class="alert-list"><li class="pass">${stateNote}</li></ul>`}<div class="table-wrap"><table class="mini-table"><thead><tr><th>Строка МП</th><th>Поле</th><th>Было → станет</th></tr></thead><tbody>${previewRows||'<tr><td colspan="3">Нет изменений</td></tr>'}</tbody></table></div>`;
+  $('audit-results').querySelectorAll('.status-filter').forEach(button=>button.addEventListener('click',()=>{const status=button.dataset.status,active=button.getAttribute('aria-pressed')==='true';$('audit-results').querySelectorAll('.status-filter').forEach(item=>item.setAttribute('aria-pressed','false'));const filter=active?'':status;if(filter)button.setAttribute('aria-pressed','true');$('audit-results').querySelectorAll('.plan-result-row').forEach(row=>row.hidden=!!filter&&row.dataset.status!==filter);}));
   $('audit-status').textContent=noChanges?(p.warnings.length?'СОВПАДАЮТ СОПОСТАВЛЕННЫЕ ПОЛЯ':'УЖЕ СОВПАДАЕТ'):blocked?'НУЖНА ПРОВЕРКА':'ГОТОВО К ВНЕСЕНИЮ';$('audit-status').className=`status-chip ${blocked?'warn':'ok'}`;
   const stageProposal=async(allowPartial)=>{
     if(!latestProposal?.changes.length)return;
     const btn=$(allowPartial?'apply-partial':'apply-proposal');btn.disabled=true;btn.textContent='Подготовка…';
     try{
       const acceptedRows=allowPartial?new Set((p.rowResults||[]).filter(row=>['ready','partial'].includes(row.status)).map(row=>row.sourceRowIndex)):null;
-      const transferChanges=acceptedRows?p.changes.filter(change=>acceptedRows.has(change.sourceRowIndex)):p.changes;
-      const transferChecks=acceptedRows?p.checks.filter(check=>acceptedRows.has(check.sourceRowIndex)):p.checks;
+      const transferChanges=acceptedRows?p.changes.filter(change=>acceptedRows.has(change.sourceGroupIndex??change.sourceRowIndex)):p.changes;
+      const transferChecks=acceptedRows?p.checks.filter(check=>acceptedRows.has(check.sourceGroupIndex??check.sourceRowIndex)):p.checks;
       if(!transferChanges.length)throw new Error('Нет строк без блокирующих проблем для частичного внесения.');
-      const draft=await api('/api/prepare-apply',{method:'POST',body:JSON.stringify({pageIndex:Number($('core-page').value),planUrl:coreTable?.url,nameCol:p.nameCol,mode:p.mode,amountTolerance:amountToleranceValue(),sourceId:p.mode==='fact'?selectedReport?.id:null,sourceSheetIndex:p.mode==='plan'?Number($('sheet').value):null,sourceHeaderRowIndex:p.mode==='plan'?selectedSheet.rows.findIndex(row=>row.number===Number($('header-row').value)):null,impressionsInThousands:$('thousand-impressions').checked,changes:transferChanges,checks:transferChecks,issues:p.issues,allowPartial})});
+      const draft=await api('/api/prepare-apply',{method:'POST',body:JSON.stringify({pageIndex:Number($('core-page').value),planUrl:coreTable?.url,nameCol:p.nameCol,mode:p.mode,amountTolerance:amountToleranceValue(),sourceId:p.mode==='fact'&&!factSources.length?selectedReport?.id:null,sourceIds:p.mode==='fact'?factSources.map(source=>source.id):[],sourceSheetIndex:p.mode==='plan'?Number($('sheet').value):null,sourceHeaderRowIndex:p.mode==='plan'?selectedSheet.rows.findIndex(row=>row.number===Number($('header-row').value)):null,impressionsInThousands:$('thousand-impressions').checked,changes:transferChanges,checks:transferChecks,issues:p.issues,allowPartial})});
       btn.textContent='Вношу…';
       const result=await api('/api/apply',{method:'POST',body:JSON.stringify({id:draft.id})});
       if(!result.ok||!result.staged)throw new Error(result.message||'Поля не прошли проверку; кнопка «Сохранить» осталась нетронутой.');
       toast(result.message);
       btn.textContent='Поля внесены · не сохранено';
       $('audit-status').textContent='ЧЕРНОВИК В CORE · НЕ СОХРАНЁН';$('audit-status').className='status-chip warn';
-      $('audit-results').insertAdjacentHTML('afterbegin',`<div class="result-note failure" id="unsaved-draft-note">${esc(result.message)} Проверь значения в открытом медиаплане. Core «Сохранить» ещё не нажималась.</div><div class="proposal-head" id="save-approval"><div><strong>Черновик проверен?</strong><small>Нажатие ниже — аппрув на сохранение в Core.</small></div><button id="approve-save" class="button primary">Подтвердить и сохранить в Core</button></div>`);
+      $('audit-results').insertAdjacentHTML('afterbegin',`<div class="result-note warn" id="unsaved-draft-note">${esc(result.message)} Проверь значения в открытом медиаплане. Core «Сохранить» ещё не нажималась.</div><div class="proposal-head" id="save-approval"><div><strong>Черновик проверен?</strong><small>Нажатие ниже — аппрув на сохранение в Core.</small></div><button id="approve-save" class="button primary">Подтвердить и сохранить в Core</button></div>`);
       $('approve-save').addEventListener('click',async()=>{
         if(!confirm(`Подтверждаешь сохранение ${transferChanges.length} изменений в Core? После подтверждения приложение нажмёт кнопку «Сохранить» и перечитает таблицу.`))return;
         const saveButton=$('approve-save');saveButton.disabled=true;saveButton.textContent='Сохраняю…';
@@ -472,18 +526,27 @@ function showProposal(mode){
           }
           $('audit-results').insertAdjacentHTML('afterbegin',`<div class="result-note ${saved.ok?'success':'failure'}">${esc(saved.message)}${saved.totalRows!=null?` Построчно проверено ${saved.verifiedRows}/${saved.totalRows}; контрольные суммы ${saved.totalsVerified?'сверены':'не сошлись'}.`:''}${esc(refreshNote)}</div>`);
           if(!saved.ok){$('audit-status').textContent='СОХРАНЕНИЕ НЕ ПОДТВЕРЖДЕНО';$('audit-status').className='status-chip bad';}
+          if(saved.ok&&mediaplanQueue.length&&mediaplanQueueIndex>=0){
+            mediaplanQueueCanAdvance=true;
+            const next=mediaplanQueueIndex+1,hasNext=next<mediaplanQueue.length;
+            $('mp-queue-status').textContent=`Проверено и сохранено ${mediaplanQueueIndex+1} из ${mediaplanQueue.length}.${hasNext?' Можно открыть следующий МП.':' Очередь завершена.'}`;
+            $('open-queued-mp').disabled=!hasNext;$('open-queued-mp').textContent=hasNext?'Открыть следующий МП':'Очередь завершена';
+            $('open-next-queued-mp')?.remove();
+            if(hasNext){const nextButton=document.createElement('button');nextButton.id='open-next-queued-mp';nextButton.type='button';nextButton.className='button secondary';nextButton.textContent=`Открыть следующий МП (${next+1}/${mediaplanQueue.length})`;nextButton.addEventListener('click',()=>$('open-queued-mp').click());$('audit-results').prepend(nextButton);}
+          }
         }catch(error){const message=error.message||'Не удалось подтвердить результат сохранения';toast(message);saveButton.disabled=true;saveButton.textContent='Результат не подтверждён — проверь Core';$('audit-status').textContent='ПРОВЕРЬ РЕЗУЛЬТАТ В CORE';$('audit-status').className='status-chip bad';$('audit-results').insertAdjacentHTML('afterbegin',`<div class="result-note failure">${esc(message)} Результат сохранения неизвестен. Проверь страницу Core вручную и не запускай сохранение повторно, пока не убедишься, что данные не записались.</div>`);}
       });
     }catch(e){const message=e.message||'Не удалось внести черновик';toast(message);$('audit-results').insertAdjacentHTML('afterbegin',`<div class="result-note failure">Черновик не проверен: ${esc(message)}. Core «Сохранить» не нажималась.</div>`);$('audit-status').textContent='НУЖНА ПРОВЕРКА';$('audit-status').className='status-chip bad';btn.disabled=true;btn.textContent='Пересобери предпросмотр';}
   };
   $('apply-proposal')?.addEventListener('click',()=>stageProposal(false));
   $('apply-partial')?.addEventListener('click',()=>stageProposal(true));
+  $('audit').scrollIntoView({behavior:'smooth',block:'start'});
 }
 function makeAlerts(xl,dl,core) {
   const out=[];
   for (const [a,b,label] of [[xl,core,'Excel ↔ МП'],[dl,core,'DataLens ↔ МП']]) {
     if (!a||!b) continue;
-    const sourceNameColumn=label.startsWith('DataLens')?exactColumn(a.headers,'Объект продвижения'):findMetric(a.headers,'name');
+    const sourceNameColumn=label.startsWith('DataLens')?(a.nameColumn??selectedReport?.nameColumn??exactColumn(a.headers,'Объект продвижения')):findMetric(a.headers,'name');
     const targetNameColumn=label.startsWith('DataLens')?exactColumn(b.headers,'Описание'):findMetric(b.headers,'name');
     out.push(...identityAlerts(a.rows,sourceNameColumn,b.rows,targetNameColumn,relationKey,label.split(' ↔ ')[0]));
     const s=summarize(a), t=summarize(b), tol=label.startsWith('Excel')?0.01:amountToleranceValue();
@@ -531,6 +594,13 @@ function renderReportOptions() {
     } catch(e) { toast(e.message); }
   });
 }
+function renderFactSources(){
+  const list=$('fact-source-list');
+  if(!factSources.length){list.textContent='Таблицы источников можно собирать с разных вкладок DataLens.';updateActionButtons();return;}
+  list.innerHTML=`<strong>Снимки источников факта · ${factSources.length}</strong>${factSources.map((source,index)=>`<div class="fact-source-item"><span>${index+1}. ${esc(source.tabLabel)} · ${source.rows.length-1} строк · ${esc(source.pageTitle||new URL(source.frameUrl).hostname)}</span><button type="button" class="button ghost" data-remove-fact-source="${index}">Убрать</button></div>`).join('')}<small>Снимки изолированы в текущей сессии и истекают через 30 минут. Суммирование дубликатов кампаний проверяется перед переносом.</small>`;
+  list.querySelectorAll('[data-remove-fact-source]').forEach(button=>button.onclick=async()=>{const index=Number(button.dataset.removeFactSource),source=factSources[index];try{await api('/api/remove-report-snapshot',{method:'POST',body:JSON.stringify({id:source.id})});factSources.splice(index,1);renderFactSources();runAudit();}catch(error){toast(error.message);}});
+  updateActionButtons();
+}
 function showReport(){ if(selectedReport){const shown=selectedReport.rows.slice(0,101);$('report-preview').innerHTML=miniTable(shown)+(selectedReport.rows.length>101?`<small class="preview-note">Показаны первые 100 строк из ${selectedReport.rows.length}. При переносе учитываются все считанные строки.</small>`:'');} }
 function planObjectsForReport(){
   if(!coreTable?.table?.rows?.length)return [];
@@ -549,9 +619,77 @@ function planPeriodForReport(){
   }
   return inferPlanMonth(hints.filter(Boolean));
 }
+function smartisRenderPreview(result) {
+  const { source, reconciliation } = result;
+  const hasNewRows = reconciliation.additionCount > 0;
+  $('smartis-audit-status').textContent = hasNewRows ? result.writeAvailable ? 'ГОТОВО К ВНЕСЕНИЮ' : 'ГОТОВО К КОПИРОВАНИЮ' : 'НЕТ НОВЫХ СТРОК';
+  $('smartis-audit-status').className = `status-chip ${hasNewRows?'warn':'ok'}`;
+  const notes = [
+    `<li class="${source.missingPersonIdRows?'warn':'pass'}">Выгрузка: ${source.sourceRows} непустых строк; без Person ID: ${source.missingPersonIdRows}; готово к импорту: ${source.importable}.</li>`,
+    `<li class="${reconciliation.additionCount?'warn':'pass'}">Новых лидов: ${reconciliation.additionCount}; уже в таблице: ${reconciliation.alreadyPresentCount}; следующая строка: ${reconciliation.nextRowNumber}.</li>`
+  ];
+  if (source.duplicateCount) notes.push(`<li class="warn">Повторные Person ID в файле: ${source.duplicateCount}; одинаковые объединены, конфликты исключены.</li>`);
+  if (source.conflictCount) notes.push(`<li class="error">Конфликтующие ID пропущены: ${source.conflictCount}.</li>`);
+  if (source.ignoredCount) notes.push(`<li class="warn">Неподдерживаемые / неизвестные источники пропущены: ${source.ignoredCount}. Правила VK к ним не применялись.</li>`);
+  if (reconciliation.existingMismatchCount) notes.push(`<li class="error">ID с отличающимися данными: ${reconciliation.existingMismatchCount}. Существующие строки не изменяются.</li>`);
+  if (reconciliation.duplicatedTargetCount) notes.push(`<li class="warn">В целевом листе уже есть дубли ID: ${reconciliation.duplicatedTargetCount}; они сохранены без изменений.</li>`);
+  if (source.warningCount) notes.push(`<li class="warn">Поля требуют ручного внимания: ${source.warningCount}; первые 100 предупреждений в таблице ниже.</li>`);
+  let body = `<ul class="alert-list">${notes.join('')}</ul>`;
+  if (reconciliation.additions.length) {
+    body += `<div class="table-wrap"><table class="mini-table"><thead><tr><th>A · Person ID</th><th>B · Тип</th><th>C · Дата</th><th>D · Контакт</th><th>E · Канал</th><th>F · Площадка</th><th>G · Кампания</th><th>H · Вид помещения</th><th>I · Объект</th><th>J · Причина отказа</th><th>K · post_view</th></tr></thead><tbody>${reconciliation.additions.map(row=>`<tr><td>${esc(row.personId)}</td><td>${esc(row.leadType)}</td><td>${esc(row.createdAt)}</td><td>${esc(row.contact)}</td><td>${esc(row.channel)}</td><td>${esc(row.platform)}</td><td>${esc(row.campaign)}</td><td>${esc(row.propertyType)}</td><td>${esc(row.property)}</td><td>${esc(row.rejectionReason)}</td><td>${esc(row.postView)}</td></tr>`).join('')}</tbody></table></div>`;
+  } else body += '<div class="empty-state"><strong>Добавлять нечего</strong><small>Новых ID нет; существующие строки оставлены без изменений.</small></div>';
+  if (reconciliation.additionCount > reconciliation.additions.length) body += `<small class="preview-note">В предпросмотре показаны первые ${reconciliation.additions.length} из ${reconciliation.additionCount} строк. Нижнее окно копирует весь набор.</small>`;
+  if (source.ignoredCount) body += `<h3 class="smartis-subhead">Пропущенные строки</h3><div class="table-wrap"><table class="mini-table"><thead><tr><th>Excel row</th><th>Person ID</th><th>Source</th><th>Почему пропущена</th></tr></thead><tbody>${source.ignored.map(row=>`<tr><td>${esc(row.sourceRow)}</td><td>${esc(row.personId)}</td><td>${esc(row.source)}</td><td>${esc(row.reason)}</td></tr>`).join('')}</tbody></table>${source.ignoredCount>source.ignored.length?`<small class="preview-note">Показаны первые ${source.ignored.length} из ${source.ignoredCount} пропущенных строк.</small>`:''}</div>`;
+  if (source.warningCount) body += `<h3 class="smartis-subhead">Предупреждения полей</h3><div class="table-wrap"><table class="mini-table"><thead><tr><th>Excel row</th><th>Person ID</th><th>Предупреждение</th></tr></thead><tbody>${source.warnings.map(row=>`<tr><td>${esc(row.sourceRow)}</td><td>${esc(row.personId)}</td><td>${esc(row.warning)}</td></tr>`).join('')}</tbody></table></div>`;
+  $('smartis-results').innerHTML = body;
+  $('smartis-append-row').hidden = !result.writeAvailable;
+  $('smartis-append').disabled = !result.writeAvailable || !result.previewId;
+  $('smartis-append').hidden = !result.writeAvailable;
+  $('smartis-append').textContent = `Добавить ${reconciliation.additionCount} отсутствующих`;
+  $('smartis-paste-output').value = result.pasteTsv || '';
+  $('smartis-copy').disabled = !result.copyAvailable;
+  $('smartis-copy').textContent = `Скопировать ${reconciliation.additionCount} строк`;
+  $('smartis-copy-info').textContent = result.copyAvailable ? `${reconciliation.additionCount} строк · 11 колонок A:K · заголовки не включены` : 'Новых строк для копирования нет.';
+  $('smartis-copy-status').textContent = result.copyAvailable ? `Сверка завершена ${new Date(result.targetReadAt).toLocaleString('ru-RU')}. Данные в Google не изменены.` : 'После сверки здесь появятся только отсутствующие Person ID.';
+}
+
+async function smartisLoadTarget() {
+  const button=$('smartis-load-target');button.disabled=true;$('smartis-target-info').textContent='Читаю актуальный список из таблицы…';
+  try {
+    const info=await api('/api/smartis/sheet',{method:'POST',body:'{}'});smartisTarget=info;
+    $('smartis-prepare').disabled=!info.sheets.length||!smartisWorkbook;
+    const sheet=info.sheets[0];
+    $('smartis-target-info').textContent=sheet?`${info.title} · ${sheet.title} · ${sheet.rowCount} строк · список обновлён`:'В таблице не найден закреплённый лист.';
+    if(!sheet)throw new Error('В таблице не найден лист «Лиды Смартис».');
+    return true;
+  } catch(error) { smartisTarget=null;$('smartis-prepare').disabled=true;$('smartis-target-info').textContent=`Не удалось прочитать точку 0: ${error.message}`;toast(error.message);return false; }
+  finally {button.disabled=false;}
+}
+
+async function smartisPrepare() {
+  const sheetName=$('smartis-sheet').value;
+  if(!sheetName||!smartisTarget?.sheets?.length){toast('Загрузи Excel и дождись чтения точки 0.');return;}
+  $('smartis-prepare').disabled=true;$('smartis-audit-status').textContent='СВЕРЯЮ…';
+  try {
+    const result=await api('/api/smartis/preview',{method:'POST',body:JSON.stringify({sourceSheet:sheetName,manualSource:$('smartis-source-mode').value})});
+    smartisPreview=result;smartisRenderPreview(result);if(result.copyAvailable)toast('Сверка готова. Скопируй строки в нижнем блоке и вставь в Google Sheets.');
+  } catch(error) {$('smartis-audit-status').textContent='ОШИБКА СВЕРКИ';$('smartis-audit-status').className='status-chip bad';$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;smartisPreview=null;}
+  finally {$('smartis-prepare').disabled=!smartisTarget||!smartisWorkbook?.sheets?.length;}
+}
+
+async function smartisRefreshHistory() {
+  try { const {entries}=await api('/api/smartis/history');$('smartis-history').innerHTML=entries.length?`<div class="table-wrap"><table class="mini-table"><thead><tr><th>Время</th><th>Файл</th><th>Лист</th><th>Строк</th><th>Проверка</th></tr></thead><tbody>${entries.map(item=>`<tr><td>${esc(new Date(item.at).toLocaleString('ru-RU'))}</td><td>${esc(item.fileName)}</td><td>${esc(item.sheetTitle)}</td><td>${esc(item.count)}</td><td>${item.verified?'Построчно подтверждено':'Нужна проверка'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty-state"><strong>Импортов пока не было</strong></div>'; }
+  catch(error) {$('smartis-history').innerHTML=`<ul class="alert-list"><li class="warn">${esc(error.message)}</li></ul>`;}
+}
+
 async function refreshState(){
   try {
     const s=await api('/api/state'); setConnection(s.connected,s.pages);
+    if (s.smartis) {
+      $('smartis-append-row').hidden = !s.smartis.googleWritable;
+      $('smartis-append').hidden = !s.smartis.googleWritable;
+      if (!s.smartis.googleReadable && smartisPreview) { smartisPreview = null; $('smartis-append').disabled = true; $('smartis-copy').disabled = true; $('smartis-paste-output').value=''; }
+    }
     $('admin-feedback').hidden = !s.isAdmin;
     $('admin-login-toggle').hidden = !!s.isAdmin;
     if (s.isAdmin) $('admin-login-form').hidden = true;
@@ -565,7 +703,7 @@ async function refreshState(){
   catch(e){ toast(e.message); }
 }
 async function refreshBrowserSnapshot(){
-  if(snapshotBusy||!browserPages.some(p=>p.i===activeBrowserPage))return;
+  if(document.hidden||snapshotBusy||!browserPages.some(p=>p.i===activeBrowserPage))return;
   snapshotBusy=true;
   try{
     const s=await api(`/api/browser-snapshot?pageIndex=${activeBrowserPage}`);
@@ -595,10 +733,31 @@ $('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;workbookName
 $('sheet').onchange=()=>loadSheet(Number($('sheet').value));
 $('header-row').onchange=refreshSheetHeader;
 const dz=$('dropzone');for(const ev of ['dragenter','dragover'])dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag')});for(const ev of ['dragleave','drop'])dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag')});dz.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f){$('file').files=e.dataTransfer.files;$('file').dispatchEvent(new Event('change'));}});
-$('open-plan').onclick=async()=>{try{const r=await api('/api/open-plan',{method:'POST',body:JSON.stringify({url:$('plan-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);$('core-page').value=String(r.activePage);toast('Указанный МП открыт во встроенной вкладке');}catch(e){toast(e.message);}};
+$('browser-toggle').onclick=()=>setBrowserCollapsed(!browserCollapsed);
+$('browser-size').onclick=()=>{browserHeight=browserHeight===380?680:380;$('browser-viewport').style.height=`min(${browserHeight}px, 75vh)`;$('browser-size').textContent=`Высота ${browserHeight} px`;};
+$('open-plan').onclick=()=>withBusy($('open-plan'),'Открываю…',async()=>{
+  if(planOpening)return;
+  planOpening=true;$('open-plan').disabled=true;$('read-plan').disabled=true;
+  try{const r=await api('/api/open-plan',{method:'POST',body:JSON.stringify({url:$('plan-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);$('core-page').value=String(r.activePage);if(mediaplanQueueIndex>=0&&mediaplanQueue[mediaplanQueueIndex]===$('plan-url').value.trim())$('mp-queue-status').textContent=`Открыт МП ${mediaplanQueueIndex+1} из ${mediaplanQueue.length}. После сохранения и сверки можно будет перейти дальше.`;toast('Указанный МП открыт во встроенной вкладке');}
+  catch(e){if(mediaplanQueueIndex>=0&&mediaplanQueue[mediaplanQueueIndex]===$('plan-url').value.trim()){mediaplanQueueIndex--;mediaplanQueueCanAdvance=true;$('open-queued-mp').disabled=false;$('mp-queue-status').textContent='Не удалось открыть МП. Можно попробовать ещё раз.';}toast(e.message);}
+  finally{planOpening=false;$('open-plan').disabled=false;$('read-plan').disabled=!browserPages.length;}
+});
+$('load-mp-queue').onclick=()=>{
+  const raw=$('mp-queue-input').value.split(/[\r\n]+/).map(value=>value.trim()).filter(Boolean),unique=[...new Set(raw)];
+  const invalid=unique.filter(value=>{try{const url=new URL(value);return url.protocol!=='https:'||url.hostname!=='core.ag-media.ru'||!/^\/documents\/mediaplans\/\d+\/edit\/?$/.test(url.pathname)}catch{return true;}});
+  if(invalid.length){toast(`В очереди допустимы только точные ссылки Core /documents/mediaplans/ID/edit. Проверь: ${invalid[0]}`);return;}
+  if(!unique.length){toast('Добавь хотя бы одну ссылку Core.');return;}
+  mediaplanQueue=unique;mediaplanQueueIndex=-1;mediaplanQueueCanAdvance=true;$('open-queued-mp').disabled=false;$('open-queued-mp').textContent='Открыть первый МП';$('mp-queue-status').textContent=`В очереди ${unique.length} МП. Каждый следующий доступен после сохранения и сверки.`;
+};
+$('open-queued-mp').onclick=()=>{
+  if(!mediaplanQueue.length)return;
+  if(mediaplanQueueIndex>=0&&!mediaplanQueueCanAdvance){toast('Сначала закончи и сверь текущий МП.');return;}
+  const next=mediaplanQueueIndex+1;if(next>=mediaplanQueue.length)return;
+  mediaplanQueueIndex=next;mediaplanQueueCanAdvance=false;$('plan-url').value=mediaplanQueue[next];$('open-queued-mp').disabled=true;$('open-plan').click();
+};
 $('browser-page').onchange=()=>{activeBrowserPage=Number($('browser-page').value);refreshBrowserSnapshot();};
 $('browser-new-tab').onclick=async()=>{try{const r=await api('/api/new-tab',{method:'POST',body:'{}'});activeBrowserPage=r.activePage;setConnection(true,r.pages);refreshBrowserSnapshot();}catch(e){toast(e.message);}};
-$('open-report').onclick=async()=>{try{const r=await api('/api/browser-open',{method:'POST',body:JSON.stringify({url:$('report-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);refreshBrowserSnapshot();toast('Открыта указанная ссылка отчёта');}catch(e){toast(e.message);}};
+$('open-report').onclick=()=>withBusy($('open-report'),'Открываю отчёт…',async()=>{try{const r=await api('/api/browser-open',{method:'POST',body:JSON.stringify({url:$('report-url').value,pageIndex:activeBrowserPage})});activeBrowserPage=r.activePage;setConnection(true,r.pages);refreshBrowserSnapshot();toast('Открыта указанная ссылка отчёта');}catch(e){toast(e.message);}});
 $('report-url').onkeydown=e=>{if(e.key==='Enter')$('open-report').click()};
 $('browser-viewport').addEventListener('click',e=>{if(e.target!==$('browser-image'))return;const image=$('browser-image'),r=image.getBoundingClientRect();browserAction({action:'click',x:(e.clientX-r.left)*(image.naturalWidth||1440)/r.width,y:(e.clientY-r.top)*(image.naturalHeight||1000)/r.height});$('browser-viewport').focus()});
 $('browser-viewport').addEventListener('wheel',e=>{if(e.target===$('browser-image')){e.preventDefault();const image=$('browser-image'),r=image.getBoundingClientRect();browserAction({action:'wheel',x:(image.naturalWidth||1440)/2,y:(image.naturalHeight||1000)/2,deltaY:e.deltaY*(image.naturalHeight||1000)/Math.max(1,r.height)})}},{passive:false});
@@ -618,9 +777,33 @@ $('browser-viewport').addEventListener('keydown',e=>{
   if(e.ctrlKey||e.altKey||e.metaKey)return;
   if(e.key.length===1||['Enter','Tab','Escape','Backspace','Delete','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown',' '].includes(e.key)){e.preventDefault();browserAction({action:'key',key:e.key})}
 });
-$('read-plan').onclick=async()=>{try{coreTable=await api('/api/read-plan',{method:'POST',body:JSON.stringify({pageIndex:Number($('core-page').value)})});$('plan-preview').innerHTML=miniTable(coreTable.table.rows);runAudit();updateActionButtons();toast(`Считал таблицу Core: ${coreTable.table.rows.length} строк`);}catch(e){toast(e.message);}};
+$('read-plan').onclick=()=>withBusy($('read-plan'),'Читаю МП…',async()=>{try{coreTable=await api('/api/read-plan',{method:'POST',body:JSON.stringify({pageIndex:Number($('core-page').value)})});$('plan-preview').innerHTML=miniTable(coreTable.table.rows);runAudit();updateActionButtons();toast(`Считал таблицу Core: ${coreTable.table.rows.length} строк`);}catch(e){toast(e.message);}});
 $('core-page').onchange=()=>{activeBrowserPage=Number($('core-page').value);$('browser-page').value=String(activeBrowserPage);refreshBrowserSnapshot();};
-$('capture').onclick=async()=>{try{const period=planPeriodForReport(),r=await api('/api/capture',{method:'POST',body:JSON.stringify({pageIndex:activeBrowserPage,period,expectedObjects:planObjectsForReport()})});reportTables=r.candidates;selectedReport=reportTables.find(t=>t.id===r.selectedId)||null;if(selectedReport)selectedReport.selectionReason=r.selectionReason||'';renderReportOptions();showReport();runAudit();updateActionButtons();const notices=[r.selectionReason,...(r.preparation||[])].filter(Boolean);if(!period)notices.unshift('Не удалось определить месяц МП — проверь период DataLens вручную.');toast(notices.join(' · ')||'Выбери таблицу DataLens вручную.');}catch(e){toast(e.message);}};
+$('capture').onclick=()=>withBusy($('capture'),'Считываю DataLens…',async()=>{try{const period=planPeriodForReport(),r=await api('/api/capture',{method:'POST',body:JSON.stringify({pageIndex:activeBrowserPage,period,expectedObjects:planObjectsForReport()})});reportTables=r.candidates;selectedReport=reportTables.find(t=>t.id===r.selectedId)||null;if(selectedReport)selectedReport.selectionReason=r.selectionReason||'';renderReportOptions();showReport();runAudit();updateActionButtons();const notices=[r.selectionReason,...(r.preparation||[])].filter(Boolean);if(!period)notices.unshift('Не удалось определить месяц МП — проверь период DataLens вручную.');toast(notices.join(' · ')||'Выбери таблицу DataLens вручную.');}catch(e){toast(e.message);}});
+$('add-fact-source').onclick=async()=>{
+  if(!selectedReport)return;
+  const button=$('add-fact-source');button.disabled=true;button.textContent='Сохраняю снимок…';
+  try{
+    const tabLabel=$('report-source-tab').selectedOptions[0].textContent;
+    const snapshot=await api('/api/archive-report-table',{method:'POST',body:JSON.stringify({id:selectedReport.id,tabLabel,period:planPeriodForReport()})});
+    if(factSources.some(source=>source.id===snapshot.id))throw new Error('Эта таблица уже есть в наборе.');
+    factSources.push(snapshot);renderFactSources();runAudit();toast(`Снимок добавлен: ${snapshot.tabLabel}, ${snapshot.rows.length-1} строк.`);
+  }catch(error){toast(error.message);}
+  finally{button.textContent='Добавить выбранную таблицу в факт';button.disabled=!selectedReport;}
+};
+$('clear-fact-sources').onclick=()=>{factSources=[];renderFactSources();runAudit();toast('Набор снимков очищен.');};
+$('switch-report-tab').onclick=async()=>{
+  const pageIndex=Number($('browser-page').value),button=$('switch-report-tab');
+  if(!Number.isInteger(pageIndex)){toast('Сначала открой DataLens во встроенном браузере.');return;}
+  button.disabled=true;
+  try{
+    const result=await api('/api/goto-report-tab',{method:'POST',body:JSON.stringify({pageIndex,tab:$('report-source-tab').value})});
+    activeBrowserPage=pageIndex;setConnection(true,browserPages);await refreshBrowserSnapshot();
+    reportTables=[];selectedReport=null;$('report-preview').innerHTML='<span class="empty">Вкладка переключена. Считай таблицу.</span>';renderReportOptions();updateActionButtons();
+    toast(`Открыта вкладка «${$('report-source-tab').selectedOptions[0].textContent}».`);
+  }catch(error){toast(error.message);}
+  finally{button.disabled=!browserPages.length;}
+};
 $('prepare-plan').onclick=()=>showProposal('plan');
 $('prepare-fact').onclick=()=>showProposal('fact');
 $('feedback-form').addEventListener('submit',async event=>{
@@ -664,7 +847,42 @@ $('admin-logout').addEventListener('click',async()=>{
 ['exact-leads','thousand-impressions','skip-excluded'].forEach(id=>$(id).addEventListener('change',runAudit));
 $('amount-tolerance').addEventListener('input',runAudit);
 $('amount-tolerance').addEventListener('change',()=>{normalizeAmountTolerance();runAudit();});
+document.querySelectorAll('.app-tab').forEach(button=>button.addEventListener('click',()=>{
+  document.querySelectorAll('.app-tab').forEach(item=>item.classList.toggle('active',item===button));
+  $('mediaplan-view').hidden=button.dataset.view!=='mediaplan-view';
+  $('smartis-view').hidden=button.dataset.view!=='smartis-view';
+  if(button.dataset.view==='smartis-view'){smartisRefreshHistory();if(!smartisTarget)smartisLoadTarget();}
+}));
+$('smartis-file').addEventListener('change',async event=>{
+  const file=event.target.files?.[0];if(!file)return;
+  $('smartis-paste-output').value='';$('smartis-copy').disabled=true;$('smartis-copy-info').textContent='После сверки здесь появятся строки A:K без заголовков.';$('smartis-copy-status').textContent='Сначала загрузи Excel и нажми «Сверить».';
+  $('smartis-file-name').textContent=file.name;$('smartis-results').innerHTML='<div class="empty-state"><strong>Читаю XLSX…</strong></div>';
+  try{
+    const result=await api('/api/smartis/workbook',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-File-Name':encodeURIComponent(file.name)},body:await file.arrayBuffer()});
+    smartisWorkbook=result;$('smartis-sheet').innerHTML=result.sheets.map(sheet=>`<option value="${esc(sheet.name)}">${esc(sheet.name)} · ${sheet.rows} строк</option>`).join('');$('smartis-sheet').disabled=!result.sheets.length;$('smartis-file-name').textContent=`${file.name} · ${result.sheets.length} листов`;
+    smartisPreview=null;$('smartis-append').disabled=true;$('smartis-prepare').disabled=!smartisTarget||!result.sheets.length;$('smartis-results').innerHTML='<div class="empty-state"><strong>Теперь нажми «Сверить»</strong></div>';
+  }catch(error){$('smartis-results').innerHTML=`<ul class="alert-list"><li class="error">${esc(error.message)}</li></ul>`;}
+});
+$('smartis-load-target').addEventListener('click',smartisLoadTarget);
+$('smartis-prepare').addEventListener('click',smartisPrepare);
+$('smartis-sheet').addEventListener('change',()=>{smartisPreview=null;$('smartis-append').disabled=true;$('smartis-copy').disabled=true;$('smartis-paste-output').value='';});
+$('smartis-copy').addEventListener('click',async()=>{
+  const output=$('smartis-paste-output'),text=output.value;
+  if(!text)return;
+  try{await navigator.clipboard.writeText(text);$('smartis-copy-status').textContent=`Скопировано ${smartisPreview?.reconciliation?.additionCount||0} строк. Вставь через Ctrl+V в первую пустую строку столбца A.`;}
+  catch{output.focus();output.select();const copied=document.execCommand('copy');$('smartis-copy-status').textContent=copied?`Скопировано ${smartisPreview?.reconciliation?.additionCount||0} строк. Вставь через Ctrl+V в первую пустую строку столбца A.`:'Не удалось получить доступ к буферу. Выдели текст в окне и скопируй Ctrl+C.';}
+});
+$('smartis-append').addEventListener('click',async()=>{
+  if(!smartisPreview?.previewId)return;
+  const count=smartisPreview.reconciliation.additionCount;
+  if(!window.confirm(`Добавить ${count} отсутствующих лидов в «${smartisPreview.target.sheetTitle}»? Существующие строки не изменятся.`))return;
+  const button=$('smartis-append');button.disabled=true;$('smartis-append-status').textContent='Добавляю строки и перечитываю лист для сверки…';
+  try{const result=await api('/api/smartis/append',{method:'POST',body:JSON.stringify({previewId:smartisPreview.previewId,confirm:true})});$('smartis-append-status').textContent=result.message;smartisPreview=null;await smartisPrepare();await smartisRefreshHistory();}
+  catch(error){$('smartis-append-status').textContent=error.message;button.disabled=false;}
+});
+$('smartis-history-refresh').addEventListener('click',smartisRefreshHistory);
 refreshState();
+smartisLoadTarget();
 setInterval(refreshState, 4000);
 setInterval(refreshBrowserSnapshot, 1300);
 window.addEventListener('pagehide', () => {

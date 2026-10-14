@@ -1,6 +1,20 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
+export function shouldSweepSession(state, now, idleBrowserMs, activeLaunches) {
+  return !state.closing
+    && Number(state.activeOperations || 0) === 0
+    && !activeLaunches.has(state.id)
+    && now - Number(state.lastActivity || 0) > idleBrowserMs;
+}
+
+// Background state/screenshot polling must not keep an unused browser alive.
+export function recordBrowserActivity(state, requestUrl, now = Date.now()) {
+  if (/^\/api\/(?:connect|new-tab|browser-open|browser-action|open-plan|capture|read-plan|inspect-page|select-view|inspect-text|open-filter|clear-current-month|set-report-period|goto-report-tab|open-report-tab|use-report-table|prepare-apply|apply|save)(?:\?|$)/.test(requestUrl || '')) {
+    state.lastActivity = now;
+  }
+}
+
 export async function forceKillChromium(profileDir) {
   let pids = [];
   if (process.platform === 'linux') {
@@ -43,5 +57,3 @@ export async function forceKillChromium(profileDir) {
   }
   return 0;
 }
-
-\n

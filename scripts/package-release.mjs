@@ -8,10 +8,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.resolve(process.env.AGM_RELEASE_OUTPUT || path.join(root, 'dist', 'agm-plan-assistant-source.tar.gz'));
 const files = [
   'README.md', 'LICENSE-ARCHITECTURE.md', 'auth.mjs', 'browser-cleanup.mjs',
+  'AGENTS.md', 'ARCHITECTURE.md', 'DEPLOYMENT.md', 'TODO.md', 'REPOSITORY-BASELINE.md', 'AUDIT.md',
   'licensing.mjs', 'package.json', 'package-lock.json', 'parse_xlsx.py',
   'reconcile.mjs', 'server.mjs', 'start.cmd', 'start.sh',
   'public', 'deploy', 'test',
-  'scripts/measure-browsers.mjs', 'scripts/package-release.mjs', 'scripts/smoke-server.mjs', 'scripts/users.mjs'
+  'smartis',
+  'scripts/check-syntax.mjs', 'scripts/measure-browsers.mjs', 'scripts/package-release.mjs', 'scripts/smoke-server.mjs', 'scripts/users.mjs'
 ];
 const forbidden = /(?:^|\/)(?:data|node_modules|\.git|\.env(?:\.|$)|browser-profile|dist)(?:\/|$)|(?:^|\/)uploaded-plan\.xlsx$/i;
 
@@ -37,8 +39,8 @@ try {
   const listed = run('tar', ['-tzf', output]).split(/\r?\n/).filter(Boolean);
   const unsafe = listed.filter(entry => forbidden.test(entry.replaceAll('\\', '/')));
   if (unsafe.length) throw new Error(`Release archive contains private or generated files: ${unsafe.join(', ')}`);
-  if (!listed.some(entry => entry.endsWith('/server.mjs')) || !listed.some(entry => entry.endsWith('/deploy/ubuntu-24.04.md')) || !listed.some(entry => entry.endsWith('/public/plan-rules.js'))) {
-    throw new Error('Release archive is missing the app, plan rules, or Ubuntu deployment guide');
+  if (!listed.some(entry => entry.endsWith('/server.mjs')) || !listed.some(entry => entry.endsWith('/deploy/ubuntu-24.04.md')) || !listed.some(entry => entry.endsWith('/public/plan-rules.js')) || !listed.some(entry => entry.endsWith('/smartis/leads.mjs')) || !listed.some(entry => entry.endsWith('/smartis/google-sheets.mjs'))) {
+    throw new Error('Release archive is missing the app, plan rules, Smartis modules, or Ubuntu deployment guide');
   }
   const stat = fs.statSync(output);
   console.log(`Created ${output} (${stat.size} bytes, ${listed.length} entries)`);

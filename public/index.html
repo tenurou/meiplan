@@ -13,19 +13,24 @@
     <div class="topbar-actions"><div class="privacy"><span class="green-dot"></span> Личные сессии изолированы</div><button id="theme-toggle" class="button secondary theme-toggle" type="button" aria-pressed="true" aria-label="Переключить на светлую тему"><span aria-hidden="true">☀</span> Светлая тема</button></div>
   </header>
   <main>
+    <nav class="app-tabs" aria-label="Разделы приложения">
+      <button class="app-tab active" type="button" data-view="mediaplan-view">Медиапланы</button>
+      <button class="app-tab" type="button" data-view="smartis-view">Лиды Смартис</button>
+    </nav>
+    <div id="mediaplan-view">
     <section class="hero">
       <div><div class="eyebrow">РАБОЧИЙ ЦИКЛ</div><h1>Медиаплан без ручной рутины</h1><p>Импорт из Excel, факт из DataLens, сверка и внесение в Core с проверкой каждой строки.</p></div>
       <button id="connect" class="button primary"><span class="icon">↗</span> Подключить браузер</button>
     </section>
     <section id="connection" class="connection card"><div class="state-icon">◉</div><div><strong>Браузер не подключён</strong><span>Страницы Core и DataLens откроются во встроенной вкладке приложения.</span></div><span class="status-chip muted">НЕ ПОДКЛЮЧЁН</span></section>
-    <section class="browser-panel card">
-      <div class="browser-toolbar"><div><strong>Рабочий браузер</strong><small id="browser-caption">Подключи браузер, затем открой заданную ссылку</small></div><select id="browser-page" disabled aria-label="Вкладка браузера"><option>Нет открытых вкладок</option></select><button id="browser-new-tab" class="button ghost" disabled>Новая вкладка</button></div>
+    <section id="browser-panel" class="browser-panel card collapsed">
+      <div class="browser-toolbar"><div><strong>Рабочий браузер</strong><small id="browser-caption">Подключи браузер, затем открой заданную ссылку</small></div><select id="browser-page" disabled aria-label="Вкладка браузера"><option>Нет открытых вкладок</option></select><button id="browser-new-tab" class="button ghost" disabled>Новая вкладка</button><button id="browser-toggle" class="button ghost" type="button" aria-expanded="false">Развернуть экран</button><button id="browser-size" class="button ghost" type="button" aria-label="Изменить высоту экрана">Высота 380 px</button></div>
       <div id="browser-viewport" class="browser-viewport" tabindex="0" title="Нажми и используй страницу мышью и клавиатурой"><div id="browser-empty" class="browser-empty" aria-hidden="true"></div><img id="browser-image" alt="Встроенная вкладка браузера" draggable="false" hidden></div>
       <div class="browser-hint">Кликни по странице, чтобы управлять ею. Используй Ctrl+V для вставки текста из буфера обмена.</div>
     </section>
     <div class="steps">
       <section class="card step-card">
-        <div class="step-head"><span class="step-number">01</span><div><h2>План из Excel</h2><p>Выбери книгу и лист с планом</p></div></div>
+        <div class="step-head"><span class="step-number">01</span><div><h2>План из Excel</h2><p>Выбери книгу и лист с планом</p><small class="step-state" id="step-state-1"></small></div></div>
         <label class="dropzone" id="dropzone"><input id="file" type="file" accept=".xlsx"><span class="upload-icon">↑</span><strong>Перетащи файл сюда</strong><small>или выбери файл .xlsx</small><em id="file-name"></em></label>
         <div class="select-row"><label for="sheet">Лист</label><select id="sheet" disabled><option>Сначала загрузи Excel</option></select></div>
         <div class="select-row"><label for="header-row">Строка заголовков</label><input id="header-row" type="number" min="1" value="1" disabled></div>
@@ -33,16 +38,20 @@
         <button id="prepare-plan" class="button secondary full-action" disabled>Подготовить перенос плана</button>
       </section>
       <section class="card step-card">
-        <div class="step-head"><span class="step-number">02</span><div><h2>Медиаплан в Core</h2><p>Вставь точную ссылку на МП</p></div></div>
+        <div class="step-head"><span class="step-number">02</span><div><h2>Медиаплан в Core</h2><p>Вставь точную ссылку на МП</p><small class="step-state" id="step-state-2"></small></div></div>
         <div class="input-action"><input id="plan-url" type="url" placeholder="https://core.ag-media.ru/documents/mediaplans/ID/edit"><button id="open-plan" class="button secondary">Открыть</button></div>
+        <details class="mp-queue"><summary>Очередь нескольких МП</summary><small>Вставь ссылки по одной на строку. Следующий МП откроется только по отдельному нажатию после сохранения и сверки текущего.</small><textarea id="mp-queue-input" rows="3" placeholder="https://core.ag-media.ru/documents/mediaplans/3084/edit&#10;https://core.ag-media.ru/documents/mediaplans/3088/edit"></textarea><div class="queue-actions"><button id="load-mp-queue" class="button ghost" type="button">Загрузить очередь</button><button id="open-queued-mp" class="button secondary" type="button" disabled>Открыть первый МП</button></div><small id="mp-queue-status" role="status">Очередь не задана.</small></details>
         <div class="select-row"><label for="core-page">Вкладка с МП</label><select id="core-page" disabled><option>Сначала подключи браузер</option></select><button id="read-plan" class="button ghost" disabled>Считать таблицу</button></div>
         <div class="preview-mini" id="plan-preview"><span class="empty">Таблица МП появится после открытия</span></div>
       </section>
       <section class="card step-card wide">
-        <div class="step-head"><span class="step-number">03</span><div><h2>Факт из DataLens</h2><p>Необязательно: укажи точную ссылку на отчёт и фильтры сам</p></div></div>
+        <div class="step-head"><span class="step-number">03</span><div><h2>Факт из DataLens</h2><p>Необязательно: укажи точную ссылку на отчёт и фильтры сам</p><small class="step-state" id="step-state-3"></small></div></div>
         <div class="input-action report-url-row"><input id="report-url" type="url" placeholder="Ссылка на конкретный отчёт DataLens"><button id="open-report" class="button secondary">Открыть отчёт</button><button id="capture" class="button ghost" disabled>Считать таблицу</button></div>
-        <div class="filter-note"><span>i</span><div><strong>Таблица и месяц подбираются по МП</strong><small>Сопоставляем «Объект продвижения» и показатели с названиями строк МП. Если период плана определён однозначно, выставляем месяц и снимаем «Текущий месяц».</small></div></div>
+        <div class="select-row"><label for="report-source-tab">Источник</label><select id="report-source-tab"><option value="sources">Все источники</option><option value="direct">Яндекс Директ</option><option value="vk">VK ADS</option><option value="classifieds">Классифайды</option><option value="promo">Промостраницы</option></select><button id="switch-report-tab" class="button ghost" disabled>Открыть вкладку</button></div>
+        <div class="filter-note"><span>i</span><div><strong>Источники можно собрать с нескольких вкладок</strong><small>Для каждого снимка проверь вкладку и период. DataLens объекты или кампании сопоставляются с описаниями Core; неоднозначные строки и непроверяемые суммы не переносятся.</small></div></div>
         <div id="report-options" class="report-options"></div>
+        <div class="queue-actions fact-source-actions"><button id="add-fact-source" class="button ghost" type="button" disabled>Добавить выбранную таблицу в факт</button><button id="clear-fact-sources" class="button ghost" type="button" disabled>Очистить набор</button></div>
+        <div id="fact-source-list" class="preview-note" role="status">Таблицы источников можно собирать с разных вкладок DataLens.</div>
         <div class="preview-mini report-preview" id="report-preview"><span class="empty">Таблица отчёта появится здесь</span></div>
         <button id="prepare-fact" class="button secondary full-action" disabled>Подготовить перенос факта</button>
       </section>
@@ -87,6 +96,32 @@
       <div class="feedback-copy"><div class="eyebrow">АДМИНИСТРАТОР</div><h2 id="admin-feedback-title">Обращения сотрудников</h2><p id="admin-feedback-status" role="status">Загружаю обращения…</p></div>
       <div class="feedback-submit"><small>Показаны последние 500 обращений, новые сверху.</small><div class="admin-panel-actions"><button class="button secondary" id="refresh-feedback" type="button">Обновить</button><button class="button ghost" id="admin-logout" type="button">Выйти</button></div></div>
       <div id="admin-feedback-list" class="audit-results"><div class="empty-state"><strong>Загружаю…</strong></div></div>
+    </section>
+    </div>
+    <section id="smartis-view" hidden>
+      <section class="hero smartis-hero">
+        <div><div class="eyebrow">НАКОПИТЕЛЬНЫЙ ОТЧЁТ</div><h1>Лиды Смартис</h1><p>Импорт только новых VK-лидов по Smartis Person ID. Исходные строки остаются нетронутыми.</p></div>
+      </section>
+      <section class="card smartis-card">
+        <div class="step-head"><span class="step-number">02</span><div><h2>Выгрузка Smartis</h2><p>Пока поддерживается источник VK. Остальные источники будут отмечены и пропущены.</p></div></div>
+        <label class="dropzone smartis-dropzone" id="smartis-dropzone"><input id="smartis-file" type="file" accept=".xlsx"><span class="upload-icon">↑</span><strong>Загрузи XLSX выгрузку</strong><small>Файл обрабатывается в сессии и удаляется после чтения</small><em id="smartis-file-name"></em></label>
+        <div class="select-row"><label for="smartis-sheet">Лист</label><select id="smartis-sheet" disabled><option>Сначала загрузи Excel</option></select></div>
+        <div class="select-row"><label for="smartis-source-mode">Неизвестную площадку</label><select id="smartis-source-mode"><option value="auto">Не определять вручную</option><option value="vk">Считать VK (только неизвестные)</option></select></div>
+        <div class="smartis-reference-row"><strong>Точка 0 · Лиды Смартис</strong><div><button id="smartis-load-target" class="button secondary" type="button">Обновить точку 0</button><button id="smartis-prepare" class="button ghost" type="button" disabled>Сверить</button></div></div>
+        <div id="smartis-target-info" class="preview-note" role="status">Загружаю исходный список…</div>
+      </section>
+      <section class="card smartis-card">
+        <div class="audit-head"><div><div class="eyebrow">ПРЕДПРОСМОТР И СВЕРКА</div><h2>Новые строки и пропуски</h2></div><span id="smartis-audit-status" class="status-chip muted">ЖДЁТ ДАННЫЕ</span></div>
+        <div id="smartis-results" class="audit-results"><div class="empty-state"><strong>Загрузи XLSX, проверь лист и нажми «Сверить»</strong><small>Приложение не меняет таблицу автоматически.</small></div></div>
+        <div id="smartis-append-row" class="smartis-append-row"><small id="smartis-append-status" role="status">Импорт будет добавлять только отсутствующие ID.</small><button id="smartis-append" class="button primary" type="button" disabled>Добавить отсутствующих</button></div>
+      </section>
+      <section class="card smartis-card smartis-copy-card">
+        <div class="audit-head"><div><div class="eyebrow">ГОТОВО ДЛЯ GOOGLE SHEETS</div><h2>Скопируй новые строки</h2><small id="smartis-copy-info">После сверки здесь появятся строки A:K без заголовков.</small></div><button id="smartis-copy" class="button secondary" type="button" disabled>Скопировать строки</button></div>
+        <label class="smartis-copy-label" for="smartis-paste-output">Скопируй и вставь в первую пустую строку столбца A</label>
+        <textarea id="smartis-paste-output" class="smartis-paste-output" rows="8" readonly spellcheck="false" placeholder="Сначала загрузи Excel и нажми «Сверить»"></textarea>
+        <small id="smartis-copy-status" class="preview-note" role="status">В буфер попадут только отсутствующие Person ID и ровно 11 колонок A:K.</small>
+      </section>
+      <section class="card smartis-card"><div class="audit-head"><div><div class="eyebrow">ЖУРНАЛ</div><h2>Последние импорты</h2></div><button id="smartis-history-refresh" class="button ghost" type="button">Обновить</button></div><div id="smartis-history" class="audit-results"><div class="empty-state"><strong>Импортов пока нет</strong></div></div></section>
     </section>
     <footer><span>Авто-МП</span><span>Браузерные профили и загруженные книги разделены по сессиям браузера</span></footer>
   </main>
